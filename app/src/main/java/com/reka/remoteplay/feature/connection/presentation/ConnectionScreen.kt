@@ -25,22 +25,26 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.reka.remoteplay.feature.connection.data.local.SavedServer
 import com.reka.remoteplay.feature.connection.domain.model.ConnectionState
+import com.reka.remoteplay.ui.theme.*
 import java.text.SimpleDateFormat
 import java.util.*
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConnectionScreen(
-    viewModel: ConnectionViewModel,
-    onConnected: () -> Unit
+    connectionState: ConnectionState,
+    savedServers: List<SavedServer>,
+    hostInput: String,
+    portInput: String,
+    usbMode: Boolean,
+    onHostChanged: (String) -> Unit,
+    onPortChanged: (String) -> Unit,
+    onConnect: () -> Unit,
+    onDisconnect: () -> Unit,
+    onConnectToServer: (SavedServer) -> Unit,
+    onRemoveServer: (SavedServer) -> Unit,
+    onSetUsbMode: (Boolean) -> Unit
 ) {
-    val connectionState by viewModel.connectionState.collectAsState()
-    val savedServers by viewModel.savedServers.collectAsState(initial = emptyList())
-    val hostInput by viewModel.hostInput.collectAsState()
-    val portInput by viewModel.portInput.collectAsState()
-    val usbMode by viewModel.usbMode.collectAsState(initial = false)
-
-    val isConnecting = connectionState.isConnected && !connectionState.isStreaming
+    val isConnecting = connectionState.isConnected
 
     Box(
         modifier = Modifier
@@ -48,9 +52,9 @@ fun ConnectionScreen(
             .background(
                 Brush.verticalGradient(
                     colors = listOf(
-                        Color(0xFF0D1117),
-                        Color(0xFF161B22),
-                        Color(0xFF0D1117)
+                        AppBackgroundDark,
+                        AppBackgroundMid,
+                        AppBackgroundDark
                     )
                 )
             )
@@ -67,7 +71,7 @@ fun ConnectionScreen(
             Icon(
                 imageVector = Icons.Default.DesktopWindows,
                 contentDescription = null,
-                tint = Color(0xFF58A6FF),
+                tint = AppAccent,
                 modifier = Modifier.size(64.dp)
             )
             Spacer(modifier = Modifier.height(16.dp))
@@ -80,7 +84,7 @@ fun ConnectionScreen(
             Text(
                 text = "Connect to your PC",
                 fontSize = 14.sp,
-                color = Color(0xFF8B949E)
+                color = AppTextTertiary
             )
 
             Spacer(modifier = Modifier.height(32.dp))
@@ -89,13 +93,13 @@ fun ConnectionScreen(
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF21262D))
+                colors = CardDefaults.cardColors(containerColor = AppSurface)
             ) {
                 Column(modifier = Modifier.padding(20.dp)) {
                     // Host input
                     OutlinedTextField(
                         value = hostInput,
-                        onValueChange = viewModel::onHostChanged,
+                        onValueChange = onHostChanged,
                         label = { Text("Server IP") },
                         placeholder = { Text("192.168.1.100") },
                         leadingIcon = { Icon(Icons.Default.Computer, contentDescription = null) },
@@ -107,13 +111,13 @@ fun ConnectionScreen(
                         ),
                         enabled = !isConnecting,
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = Color(0xFF58A6FF),
-                            unfocusedBorderColor = Color(0xFF30363D),
-                            focusedLabelColor = Color(0xFF58A6FF),
-                            unfocusedLabelColor = Color(0xFF8B949E),
-                            cursorColor = Color(0xFF58A6FF),
+                            focusedBorderColor = AppAccent,
+                            unfocusedBorderColor = AppBorder,
+                            focusedLabelColor = AppAccent,
+                            unfocusedLabelColor = AppTextTertiary,
+                            cursorColor = AppAccent,
                             focusedTextColor = Color.White,
-                            unfocusedTextColor = Color(0xFFC9D1D9)
+                            unfocusedTextColor = AppTextSecondary
                         )
                     )
 
@@ -122,7 +126,7 @@ fun ConnectionScreen(
                     // Port input
                     OutlinedTextField(
                         value = portInput,
-                        onValueChange = viewModel::onPortChanged,
+                        onValueChange = onPortChanged,
                         label = { Text("Port") },
                         leadingIcon = { Icon(Icons.Default.Tag, contentDescription = null) },
                         modifier = Modifier.fillMaxWidth(),
@@ -132,17 +136,17 @@ fun ConnectionScreen(
                             imeAction = ImeAction.Done
                         ),
                         keyboardActions = KeyboardActions(
-                            onDone = { if (!isConnecting) viewModel.connect() }
+                            onDone = { if (!isConnecting) onConnect() }
                         ),
                         enabled = !isConnecting,
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = Color(0xFF58A6FF),
-                            unfocusedBorderColor = Color(0xFF30363D),
-                            focusedLabelColor = Color(0xFF58A6FF),
-                            unfocusedLabelColor = Color(0xFF8B949E),
-                            cursorColor = Color(0xFF58A6FF),
+                            focusedBorderColor = AppAccent,
+                            unfocusedBorderColor = AppBorder,
+                            focusedLabelColor = AppAccent,
+                            unfocusedLabelColor = AppTextTertiary,
+                            cursorColor = AppAccent,
                             focusedTextColor = Color.White,
-                            unfocusedTextColor = Color(0xFFC9D1D9)
+                            unfocusedTextColor = AppTextSecondary
                         )
                     )
 
@@ -158,19 +162,19 @@ fun ConnectionScreen(
                             Icon(
                                 Icons.Default.Usb,
                                 contentDescription = null,
-                                tint = Color(0xFF8B949E),
+                                tint = AppTextTertiary,
                                 modifier = Modifier.size(20.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("USB Tethering", color = Color(0xFFC9D1D9), fontSize = 14.sp)
+                            Text("USB Tethering", color = AppTextSecondary, fontSize = 14.sp)
                         }
                         Switch(
                             checked = usbMode,
-                            onCheckedChange = viewModel::setUsbMode,
+                            onCheckedChange = onSetUsbMode,
                             enabled = !isConnecting,
                             colors = SwitchDefaults.colors(
-                                checkedThumbColor = Color(0xFF58A6FF),
-                                checkedTrackColor = Color(0xFF58A6FF).copy(alpha = 0.3f)
+                                checkedThumbColor = AppAccent,
+                                checkedTrackColor = AppAccent.copy(alpha = 0.3f)
                             )
                         )
                     }
@@ -180,14 +184,14 @@ fun ConnectionScreen(
                     // Connect / Disconnect button
                     Button(
                         onClick = {
-                            if (isConnecting) viewModel.disconnect() else viewModel.connect()
+                            if (isConnecting) onDisconnect() else onConnect()
                         },
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(50.dp),
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = if (isConnecting) Color(0xFFDA3633) else Color(0xFF238636)
+                            containerColor = if (isConnecting) AppRed else AppGreen
                         )
                     ) {
                         if (isConnecting) {
@@ -214,12 +218,12 @@ fun ConnectionScreen(
                         .fillMaxWidth()
                         .padding(top = 16.dp),
                     shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF21262D))
+                    colors = CardDefaults.cardColors(containerColor = AppSurface)
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text(
                             text = connectionState.description,
-                            color = Color(0xFF58A6FF),
+                            color = AppAccent,
                             fontSize = 14.sp
                         )
                         Spacer(modifier = Modifier.height(8.dp))
@@ -229,8 +233,8 @@ fun ConnectionScreen(
                                 .fillMaxWidth()
                                 .height(4.dp)
                                 .clip(RoundedCornerShape(2.dp)),
-                            color = Color(0xFF58A6FF),
-                            trackColor = Color(0xFF30363D)
+                            color = AppAccent,
+                            trackColor = AppBorder
                         )
                     }
                 }
@@ -243,18 +247,18 @@ fun ConnectionScreen(
                         .fillMaxWidth()
                         .padding(top = 16.dp),
                     shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF3D1F1F))
+                    colors = CardDefaults.cardColors(containerColor = AppRedBg)
                 ) {
                     Row(modifier = Modifier.padding(16.dp)) {
                         Icon(
                             Icons.Default.Error,
                             contentDescription = null,
-                            tint = Color(0xFFDA3633)
+                            tint = AppRed
                         )
                         Spacer(modifier = Modifier.width(12.dp))
                         Text(
-                            text = (connectionState as ConnectionState.Error).message,
-                            color = Color(0xFFF85149),
+                            text = connectionState.message,
+                            color = AppRedLight,
                             fontSize = 14.sp
                         )
                     }
@@ -269,7 +273,7 @@ fun ConnectionScreen(
                     text = "RECENT CONNECTIONS",
                     fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold,
-                    color = Color(0xFF8B949E),
+                    color = AppTextTertiary,
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(bottom = 8.dp)
@@ -282,8 +286,8 @@ fun ConnectionScreen(
                     items(savedServers) { server ->
                         SavedServerItem(
                             server = server,
-                            onClick = { viewModel.connectToServer(server) },
-                            onDelete = { viewModel.removeServer(server) },
+                            onClick = { onConnectToServer(server) },
+                            onDelete = { onRemoveServer(server) },
                             enabled = !isConnecting
                         )
                     }
@@ -307,7 +311,7 @@ private fun SavedServerItem(
             .fillMaxWidth()
             .clickable(enabled = enabled, onClick = onClick),
         shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF21262D))
+        colors = CardDefaults.cardColors(containerColor = AppSurface)
     ) {
         Row(
             modifier = Modifier
@@ -318,7 +322,7 @@ private fun SavedServerItem(
             Icon(
                 Icons.Default.Computer,
                 contentDescription = null,
-                tint = Color(0xFF58A6FF),
+                tint = AppAccent,
                 modifier = Modifier.size(36.dp)
             )
             Spacer(modifier = Modifier.width(12.dp))
@@ -331,13 +335,13 @@ private fun SavedServerItem(
                 )
                 Text(
                     text = "${server.host}:${server.port}",
-                    color = Color(0xFF8B949E),
+                    color = AppTextTertiary,
                     fontSize = 12.sp
                 )
                 if (server.lastConnected > 0) {
                     Text(
                         text = dateFormat.format(Date(server.lastConnected)),
-                        color = Color(0xFF484F58),
+                        color = AppTextQuaternary,
                         fontSize = 11.sp
                     )
                 }
@@ -346,11 +350,10 @@ private fun SavedServerItem(
                 Icon(
                     Icons.Default.Delete,
                     contentDescription = "Remove",
-                    tint = Color(0xFF484F58),
+                    tint = AppTextQuaternary,
                     modifier = Modifier.size(20.dp)
                 )
             }
         }
     }
 }
-

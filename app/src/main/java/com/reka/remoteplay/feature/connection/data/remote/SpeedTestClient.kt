@@ -7,10 +7,13 @@ import com.reka.remoteplay.core.model.SpeedTestResultMessage
 import com.reka.remoteplay.core.network.MessageParser
 import com.reka.remoteplay.core.network.WebSocketClient
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
@@ -22,11 +25,11 @@ import kotlin.math.min
 class SpeedTestClient @Inject constructor(
     private val webSocketClient: WebSocketClient
 ) {
-    private val _progress = MutableStateFlow(0f) // 0.0 - 1.0
-    val progress: StateFlow<Float> = _progress.asStateFlow()
+    private val _progress = MutableStateFlow(0f)
+    @Suppress("unused") val progress: StateFlow<Float> = _progress.asStateFlow()
 
     private val _status = MutableStateFlow("")
-    val status: StateFlow<String> = _status.asStateFlow()
+    @Suppress("unused") val status: StateFlow<String> = _status.asStateFlow()
 
     // Bandwidth test state
     private val bytesReceived = AtomicLong(0)
@@ -34,8 +37,9 @@ class SpeedTestClient @Inject constructor(
     @Volatile private var measurementStartNanos = 0L
     private var bandwidthResult = CompletableDeferred<Double>()
 
-    // Ping state – written from the OkHttp thread via WebSocketClient.onPong
-    private var pongReceived = CompletableDeferred<Boolean>()
+    // Ping state – written from the OkHttp thread via handlePong
+    private val pingLock = Any()
+    @Volatile private var pongReceived = CompletableDeferred<Boolean>()
     @Volatile private var pingStartNanos = 0L
     @Volatile private var pongRttMs = 0.0
 
@@ -47,12 +51,14 @@ class SpeedTestClient @Inject constructor(
         private const val PING_TIMEOUT_MS = 2000L
     }
 
-    suspend fun runSpeedTest(): SpeedTestResult {
+    suspend fun runSpeedTest(): SpeedTestResult = coroutineScope {
         Log.d(TAG, "Starting speed test...")
         _progress.value = 0f
 
-        // Register pong callback so the WebSocketClient notifies us on each pong frame
-        webSocketClient.onPong = ::handlePong
+        // Collect pong events from WebSocketClient to unblock measurePing()
+        val pongCollectorJob: Job = launch {
+            webSocketClient.pongEvents.collect { handlePong() }
+        }
 
         try {
             // 1. Ping test
@@ -81,34 +87,38 @@ class SpeedTestClient @Inject constructor(
             _progress.value = 1f
             _status.value = "Complete"
 
-            return SpeedTestResult(
+            SpeedTestResult(
                 bandwidthMbps = bandwidthMbps,
                 pingMs = pingMs,
                 jitterMs = jitterMs
             )
         } finally {
-            webSocketClient.onPong = null
+            pongCollectorJob.cancel()
         }
     }
 
     /**
      * Sends [PING_SAMPLES] "ping" text frames and collects round-trip times.
-     * The first [PING_WARMUP] samples are discarded to let WiFi drivers warm up.
-     * RTT is captured via [handlePong] which is wired to [WebSocketClient.onPong].
+     * The first [PING_WARMUP] samples are discarded to let Wi-Fi drivers warm up.
+     * RTT is captured via [handlePong] which is wired to [WebSocketClient.pongEvents].
      */
     private suspend fun measurePing(): List<Double> {
         val times = mutableListOf<Double>()
 
         for (i in 0 until PING_SAMPLES) {
             try {
-                pongReceived = CompletableDeferred()
-                pongRttMs = 0.0
-                pingStartNanos = System.nanoTime()
+                val deferred: CompletableDeferred<Boolean>
+                synchronized(pingLock) {
+                    deferred = CompletableDeferred()
+                    pongReceived = deferred
+                    pongRttMs = 0.0
+                    pingStartNanos = System.nanoTime()
+                }
 
                 webSocketClient.sendText("ping")
 
                 val success = withTimeoutOrNull(PING_TIMEOUT_MS) {
-                    pongReceived.await()
+                    deferred.await()
                 } ?: false
 
                 if (success && pongRttMs > 0) {
@@ -131,17 +141,19 @@ class SpeedTestClient @Inject constructor(
     }
 
     /**
-     * Called from [WebSocketClient.onPong] on the OkHttp network thread.
+     * Called when a pong event is received.
      * Captures RTT and unblocks the suspended [measurePing] coroutine.
      */
     fun handlePong() {
         val now = System.nanoTime()
-        val start = pingStartNanos
-        if (start > 0) {
-            pongRttMs = (now - start) / 1_000_000.0
-            pingStartNanos = 0L
+        synchronized(pingLock) {
+            val start = pingStartNanos
+            if (start > 0) {
+                pongRttMs = (now - start) / 1_000_000.0
+                pingStartNanos = 0L
+            }
+            pongReceived.complete(true)
         }
-        pongReceived.complete(true)
     }
 
     private fun calculatePingStats(times: List<Double>): Pair<Double, Double> {
@@ -149,7 +161,7 @@ class SpeedTestClient @Inject constructor(
 
         val sorted = times.sorted().toMutableList()
 
-        // Discard highest outlier when we have enough samples
+        // Discard the highest outlier when we have enough samples
         if (sorted.size > 3) sorted.removeAt(sorted.lastIndex)
 
         // Median

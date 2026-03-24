@@ -7,7 +7,7 @@ sealed class ConnectionState {
     data object SpeedTesting : ConnectionState()
     data object AwaitingNetworkInfo : ConnectionState()
     data object AwaitingSuggestedConfig : ConnectionState()
-    data class ConfiguringSettings(val config: Any? = null) : ConnectionState()
+    data object ConfiguringSettings : ConnectionState()
     data object SendingDisplayConfig : ConnectionState()
     data object AwaitingSetupComplete : ConnectionState()
     data object IceNegotiating : ConnectionState()
@@ -19,21 +19,6 @@ sealed class ConnectionState {
 
     val isConnected: Boolean
         get() = this !is Disconnected && this !is Error
-
-    val isStreaming: Boolean
-        get() = this is Streaming
-
-    val isInPhase1: Boolean
-        get() = this is Connecting || this is AwaitingHardwareInfo ||
-                this is SpeedTesting || this is AwaitingNetworkInfo ||
-                this is AwaitingSuggestedConfig || this is ConfiguringSettings
-
-    val isInPhase2: Boolean
-        get() = this is SendingDisplayConfig || this is AwaitingSetupComplete ||
-                this is IceNegotiating || this is ReadyToStream
-
-    val isInPhase3: Boolean
-        get() = this is StartingStream || this is Streaming
 
     val description: String
         get() = when (this) {

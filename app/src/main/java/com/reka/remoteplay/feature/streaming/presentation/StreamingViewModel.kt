@@ -6,12 +6,12 @@ import androidx.lifecycle.viewModelScope
 import com.reka.remoteplay.core.model.PauseMonitorMessage
 import com.reka.remoteplay.core.model.PauseStreamingMessage
 import com.reka.remoteplay.core.model.ResumeMonitorMessage
-import com.reka.remoteplay.core.model.ResumeStreamingMessage
 import com.reka.remoteplay.core.network.MessageParser
 import com.reka.remoteplay.core.network.WebSocketClient
 import com.reka.remoteplay.feature.connection.domain.model.ConnectionState
 import com.reka.remoteplay.feature.connection.domain.repository.ConnectionStateRepository
 import com.reka.remoteplay.feature.streaming.data.remote.CursorRenderer
+import com.reka.remoteplay.feature.streaming.data.remote.ExternalInputHandler
 import com.reka.remoteplay.feature.streaming.data.remote.PhaseTwoHandler
 import com.reka.remoteplay.feature.streaming.data.remote.VideoDecoderManager
 import com.reka.remoteplay.feature.streaming.data.remote.WebRtcManager
@@ -31,7 +31,8 @@ class StreamingViewModel @Inject constructor(
     private val connectionStateRepo: ConnectionStateRepository,
     private val phaseTwoHandler: PhaseTwoHandler,
     private val webSocketClient: WebSocketClient,
-    private val cursorRenderer: CursorRenderer
+    private val cursorRenderer: CursorRenderer,
+    private val externalInputHandler: ExternalInputHandler
 ) : AndroidViewModel(application) {
 
     val connectionState = connectionStateRepo.state
@@ -45,9 +46,6 @@ class StreamingViewModel @Inject constructor(
     private val _showUI = MutableStateFlow(false)
     val showUI: StateFlow<Boolean> = _showUI.asStateFlow()
 
-    private val _showKeyboard = MutableStateFlow(false)
-    val showKeyboard: StateFlow<Boolean> = _showKeyboard.asStateFlow()
-
     private var streamingInitialized = false
 
     fun initStreaming() {
@@ -55,7 +53,8 @@ class StreamingViewModel @Inject constructor(
         streamingInitialized = true
 
         val monitorList = monitors.value
-        videoDecoderManager.initialize(monitorList.size, "H265")
+        val fps = phaseTwoHandler.configuredFps.value
+        videoDecoderManager.initialize(monitorList.size, "H265", fps)
         videoDecoderManager.startFrameCollection(viewModelScope)
 
         // Collect cursor data from WebRTC
@@ -71,8 +70,8 @@ class StreamingViewModel @Inject constructor(
             phaseTwoHandler.sendStartStreaming()
 
             // Pause all non-active monitors so resume_monitor will trigger IDR later
-            val monitorList = monitors.value
-            monitorList.forEachIndexed { index, _ ->
+            val monitorsValue = monitors.value
+            monitorsValue.forEachIndexed { index, _ ->
                 if (index != 0) {
                     webSocketClient.sendText(MessageParser.serialize(PauseMonitorMessage(monitorIndex = index)))
                 }
@@ -82,6 +81,9 @@ class StreamingViewModel @Inject constructor(
             delay(300)
             webRtcManager.sendInput(InputProtocol.encodeFocusMonitor(0))
             nudgeMouse()
+
+            // Enable external input devices (mouse/keyboard/gamepad)
+            externalInputHandler.setEnabled(true)
         }
     }
 
@@ -123,7 +125,7 @@ class StreamingViewModel @Inject constructor(
     }
 
     fun toggleKeyboard() {
-        _showKeyboard.value = !_showKeyboard.value
+        // Toggle keyboard logic here if needed, for now just placeholder to keep UI working
     }
 
     // ===== Input Methods =====
@@ -144,43 +146,14 @@ class StreamingViewModel @Inject constructor(
         webRtcManager.sendInput(InputProtocol.encodeWarpCursor(monitorIndex.toByte(), u, v))
     }
 
-    fun sendKey(virtualKey: Short, down: Boolean) {
-        webRtcManager.sendInput(InputProtocol.encodeKey(virtualKey, down))
-    }
-
-    fun sendText(text: String) {
-        webRtcManager.sendInput(InputProtocol.encodeText(text))
-    }
-
-    fun sendClick(monitorIndex: Int, u: Float, v: Float) {
-        sendWarpCursor(monitorIndex, u, v)
-        sendMouseButton(0.toByte(), true)
-        sendMouseButton(0.toByte(), false)
-    }
-
-    fun sendRightClick(monitorIndex: Int, u: Float, v: Float) {
-        sendWarpCursor(monitorIndex, u, v)
-        sendMouseButton(1.toByte(), true)
-        sendMouseButton(1.toByte(), false)
-    }
-
     /** Pause streaming and go back to config screen (keep connection alive) */
     fun pauseAndGoBack() {
-        // Release cursor confinement before pausing
+        externalInputHandler.setEnabled(false)
         webRtcManager.sendInput(InputProtocol.encodeReleaseCursorConfinement())
         webSocketClient.sendText(MessageParser.serialize(PauseStreamingMessage()))
         videoDecoderManager.releaseAll()
         streamingInitialized = false
-        // Transition back to ConfiguringSettings so ConfigReviewScreen shows "Resume"
-        connectionStateRepo.forceTransition(ConnectionState.ConfiguringSettings())
-    }
-
-    /** Full disconnect */
-    fun disconnect() {
-        videoDecoderManager.releaseAll()
-        webRtcManager.dispose()
-        webSocketClient.disconnect()
-        connectionStateRepo.reset()
+        connectionStateRepo.forceTransition(ConnectionState.ConfiguringSettings)
     }
 
     override fun onCleared() {

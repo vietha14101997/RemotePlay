@@ -6,7 +6,6 @@ import com.reka.remoteplay.core.model.ErrorMessage
 import com.reka.remoteplay.core.model.HardwareInfoAckMessage
 import com.reka.remoteplay.core.model.HardwareInfoMessage
 import com.reka.remoteplay.core.model.ProceedMessage
-import com.reka.remoteplay.core.model.SpeedTestResult
 import com.reka.remoteplay.core.model.SuggestedConfigMessage
 import com.reka.remoteplay.core.network.MessageParser
 import com.reka.remoteplay.core.network.WebSocketClient
@@ -33,12 +32,6 @@ class PhaseOneHandler @Inject constructor(
 
     private val _suggestedConfig = MutableStateFlow<SuggestedConfigMessage?>(null)
     val suggestedConfig: StateFlow<SuggestedConfigMessage?> = _suggestedConfig.asStateFlow()
-
-    private val _speedTestResult = MutableStateFlow<SpeedTestResult?>(null)
-    val speedTestResult: StateFlow<SpeedTestResult?> = _speedTestResult.asStateFlow()
-
-    val speedTestProgress = speedTestClient.progress
-    val speedTestStatus = speedTestClient.status
 
     private var messageJob: Job? = null
     private var listeningScope: CoroutineScope? = null
@@ -69,10 +62,7 @@ class PhaseOneHandler @Inject constructor(
         }
     }
 
-    private suspend fun handleTextMessage(text: String, displayMetrics: DisplayMetrics) {
-        // "pong" frames are intercepted by WebSocketClient and forwarded via onPong callback;
-        // they never reach textMessages, so no guard is needed here.
-
+    private fun handleTextMessage(text: String, displayMetrics: DisplayMetrics) {
         val type = MessageParser.getMessageType(text) ?: return
 
         when (type) {
@@ -81,10 +71,8 @@ class PhaseOneHandler @Inject constructor(
                 val msg = MessageParser.parse<HardwareInfoMessage>(text) ?: return
                 _serverInfo.value = msg
 
-                // Confirm we are in the expected state (no-op if already there)
                 connectionStateRepo.tryTransition(ConnectionState.AwaitingHardwareInfo)
 
-                // Detect client codec capabilities and acknowledge
                 val codecs = codecDetector.detectCapabilities(displayMetrics)
                 val ack = HardwareInfoAckMessage(
                     clientCodecs = codecs,
@@ -95,19 +83,9 @@ class PhaseOneHandler @Inject constructor(
 
                 connectionStateRepo.tryTransition(ConnectionState.SpeedTesting)
 
-                // Launch speed test in a SEPARATE coroutine so it doesn't block
-                // the textMessages collector. The collector must remain active to
-                // process "speedtest_end" while the bandwidth test is running.
                 listeningScope?.launch {
                     try {
-                        val result = speedTestClient.runSpeedTest()
-                        _speedTestResult.value = result
-                        Log.d(
-                            TAG,
-                            "Speed test complete: ${"%.1f".format(result.bandwidthMbps)}Mbps, " +
-                                "${"%.1f".format(result.pingMs)}ms ping"
-                        )
-
+                        speedTestClient.runSpeedTest()
                         connectionStateRepo.tryTransition(ConnectionState.AwaitingNetworkInfo)
                         connectionStateRepo.tryTransition(ConnectionState.AwaitingSuggestedConfig)
                     } catch (e: Exception) {
@@ -129,7 +107,7 @@ class PhaseOneHandler @Inject constructor(
                 val msg = MessageParser.parse<SuggestedConfigMessage>(text) ?: return
                 _suggestedConfig.value = msg
                 connectionStateRepo.tryTransition(
-                    ConnectionState.ConfiguringSettings(config = msg)
+                    ConnectionState.ConfiguringSettings
                 )
                 Log.d(
                     TAG,
@@ -167,6 +145,5 @@ class PhaseOneHandler @Inject constructor(
         listeningScope = null
         _serverInfo.value = null
         _suggestedConfig.value = null
-        _speedTestResult.value = null
     }
 }

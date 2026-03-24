@@ -18,17 +18,18 @@ class PhaseTwoHandler @Inject constructor(
     private val webRtcManager: WebRtcManager,
     private val cursorRenderer: CursorRenderer
 ) {
-    private val _configProgress = MutableStateFlow<ConfigProgressMessage?>(null)
-    val configProgress: StateFlow<ConfigProgressMessage?> = _configProgress.asStateFlow()
-
     private val _monitors = MutableStateFlow<List<MonitorInfoDto>>(emptyList())
     val monitors: StateFlow<List<MonitorInfoDto>> = _monitors.asStateFlow()
 
     private val _iceReady = MutableStateFlow(false)
     val iceReady: StateFlow<Boolean> = _iceReady.asStateFlow()
 
+    private val _configuredFps = MutableStateFlow(60)
+    val configuredFps: StateFlow<Int> = _configuredFps.asStateFlow()
+
+    fun setConfiguredFps(fps: Int) { _configuredFps.value = fps }
+
     private var messageJob: Job? = null
-    private var expectedMonitors = 0
 
     companion object {
         private const val TAG = "PhaseTwoHandler"
@@ -68,16 +69,9 @@ class PhaseTwoHandler @Inject constructor(
         val type = MessageParser.getMessageType(text) ?: return
 
         when (type) {
-            "config_progress" -> {
-                val msg = MessageParser.parse<ConfigProgressMessage>(text) ?: return
-                _configProgress.value = msg
-                Log.d(TAG, "Config progress: ${msg.step} ${msg.progress}% - ${msg.message}")
-            }
-
             "config_complete" -> {
                 val msg = MessageParser.parse<ConfigCompleteMessage>(text) ?: return
                 _monitors.value = msg.monitors
-                expectedMonitors = msg.monitors.size
                 Log.d(TAG, "Config complete: ${msg.monitors.size} monitors, captureReady=${msg.captureReady}")
 
                 connectionStateRepo.tryTransition(ConnectionState.AwaitingSetupComplete)
@@ -180,9 +174,7 @@ class PhaseTwoHandler @Inject constructor(
         messageJob?.cancel()
         messageJob = null
         webRtcManager.dispose()
-        _configProgress.value = null
         _monitors.value = emptyList()
         _iceReady.value = false
-        expectedMonitors = 0
     }
 }

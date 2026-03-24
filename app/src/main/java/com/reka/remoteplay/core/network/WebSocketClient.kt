@@ -5,9 +5,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.*
 import okhttp3.*
-import okio.ByteString
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -23,7 +21,6 @@ class WebSocketClient @Inject constructor() {
     private var webSocket: WebSocket? = null
     private var pingJob: Job? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val pingSequence = AtomicInteger(0)
     private val lastPongTime = AtomicLong(0)
 
     private val _textMessages = MutableSharedFlow<String>(
@@ -46,13 +43,15 @@ class WebSocketClient @Inject constructor() {
     private val _rttMs = MutableStateFlow(0f)
     val rttMs: StateFlow<Float> = _rttMs.asStateFlow()
 
-    /** Called on every plain "pong" or "pong:<seq>" text frame, before RTT accounting. */
-    var onPong: (() -> Unit)? = null
+    /** Emits on every plain "pong" or "pong:<seq>" text frame, after RTT accounting. */
+    private val _pongEvents = MutableSharedFlow<Unit>(
+        replay = 0,
+        extraBufferCapacity = 16,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+    val pongEvents: SharedFlow<Unit> = _pongEvents.asSharedFlow()
 
     fun connect(host: String, port: Int = 8288, token: String? = null, isUsb: Boolean = false) {
-        // Clean up previous connection without emitting DISCONNECTED
-        // (disconnect() would emit DISCONNECTED and cause race condition
-        // where ViewModel sees "Connection lost" before new connection starts)
         pingJob?.cancel()
         pingJob = null
         webSocket?.close(1000, null)
@@ -82,7 +81,6 @@ class WebSocketClient @Inject constructor() {
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                // Handle ping/pong as raw text
                 if (text == "ping" || text.startsWith("ping:")) {
                     val seq = text.removePrefix("ping:").takeIf { it != text }
                     val pong = if (seq != null) "pong:$seq" else "pong"
@@ -96,13 +94,13 @@ class WebSocketClient @Inject constructor() {
                         _rttMs.value = rtt.toFloat()
                     }
                     lastPongTime.set(System.currentTimeMillis())
-                    onPong?.invoke()
+                    _pongEvents.tryEmit(Unit)
                     return
                 }
                 _textMessages.tryEmit(text)
             }
 
-            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+            override fun onMessage(webSocket: WebSocket, bytes: okio.ByteString) {
                 _binaryMessages.tryEmit(bytes.toByteArray())
             }
 
@@ -127,10 +125,6 @@ class WebSocketClient @Inject constructor() {
         return webSocket?.send(text) ?: false
     }
 
-    fun sendBinary(data: ByteArray): Boolean {
-        return webSocket?.send(ByteString.of(*data)) ?: false
-    }
-
     fun disconnect() {
         pingJob?.cancel()
         pingJob = null
@@ -148,12 +142,6 @@ class WebSocketClient @Inject constructor() {
                 webSocket?.send("ping:$ts")
             }
         }
-    }
-
-    fun destroy() {
-        disconnect()
-        scope.cancel()
-        client.dispatcher.executorService.shutdown()
     }
 
     companion object {

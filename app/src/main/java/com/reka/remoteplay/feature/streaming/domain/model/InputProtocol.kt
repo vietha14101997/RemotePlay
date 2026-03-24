@@ -65,4 +65,27 @@ object InputProtocol {
     fun encodeReleaseCursorConfinement(): ByteArray {
         return byteArrayOf(TAG_FOCUS_MONITOR, 0xFF.toByte())
     }
+
+    const val TAG_GAMEPAD: Byte = 0x07 // 13 bytes: [tag][buttons:u16][LT:u8][RT:u8][LX:i16][LY:i16][RX:i16][RY:i16]
+
+    fun encodeGamepad(
+        buttons: Short,
+        leftTrigger: Byte,
+        rightTrigger: Byte,
+        leftX: Short,
+        leftY: Short,
+        rightX: Short,
+        rightY: Short
+    ): ByteArray {
+        return ByteBuffer.allocate(13).order(ByteOrder.LITTLE_ENDIAN)
+            .put(TAG_GAMEPAD)
+            .putShort(buttons)
+            .put(leftTrigger)
+            .put(rightTrigger)
+            .putShort(leftX)
+            .putShort(leftY)
+            .putShort(rightX)
+            .putShort(rightY)
+            .array()
+    }
 }

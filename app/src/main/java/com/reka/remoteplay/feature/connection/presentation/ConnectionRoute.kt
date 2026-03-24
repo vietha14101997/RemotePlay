@@ -7,7 +7,6 @@ import com.reka.remoteplay.feature.connection.domain.model.ConnectionState
 @Composable
 fun ConnectionRoute(
     onNavigateToConfigReview: () -> Unit,
-    onNavigateToStreaming: () -> Unit,
     viewModel: ConnectionViewModel = hiltViewModel()
 ) {
     val connectionState by viewModel.connectionState.collectAsState()
@@ -31,9 +30,24 @@ fun ConnectionRoute(
         }
     }
 
+    val savedServers by viewModel.savedServers.collectAsState(initial = emptyList())
+    val hostInput by viewModel.hostInput.collectAsState()
+    val portInput by viewModel.portInput.collectAsState()
+    val usbMode by viewModel.usbMode.collectAsState(initial = false)
+
     ConnectionScreen(
-        viewModel = viewModel,
-        onConnected = onNavigateToStreaming
+        connectionState = connectionState,
+        savedServers = savedServers,
+        hostInput = hostInput,
+        portInput = portInput,
+        usbMode = usbMode,
+        onHostChanged = viewModel::onHostChanged,
+        onPortChanged = viewModel::onPortChanged,
+        onConnect = viewModel::connect,
+        onDisconnect = viewModel::disconnect,
+        onConnectToServer = viewModel::connectToServer,
+        onRemoveServer = viewModel::removeServer,
+        onSetUsbMode = viewModel::setUsbMode
     )
 }
 
@@ -49,15 +63,6 @@ fun ConfigReviewRoute(
 
     // Track if stream was paused (came back from StreamingScreen)
     val isPaused = remember { mutableStateOf(false) }
-    LaunchedEffect(connectionState) {
-        // Detect return from streaming (pauseAndGoBack sets ConfiguringSettings)
-        if (connectionState is ConnectionState.ConfiguringSettings) {
-            // Check if we already had a streaming session before
-            if (isPaused.value) {
-                // Already marked as paused, stay here
-            }
-        }
-    }
 
     // Navigate to streaming when ICE completes
     var navigated by remember { mutableStateOf(false) }
@@ -93,6 +98,7 @@ fun ConfigReviewRoute(
                 onNavigateToStreaming()
             },
             onBack = {
+                isPaused.value = false
                 viewModel.disconnect()
                 onBack()
             }

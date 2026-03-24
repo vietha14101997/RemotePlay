@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.reka.remoteplay.core.model.DisplayConfigMessage
 import com.reka.remoteplay.core.model.ResolutionDto
+import com.reka.remoteplay.core.model.ResumeStreamingMessage
 import com.reka.remoteplay.core.network.MessageParser
 import com.reka.remoteplay.core.network.WebSocketClient
 import com.reka.remoteplay.core.network.WsConnectionState
@@ -31,22 +32,15 @@ class ConnectionViewModel @Inject constructor(
 
     val connectionState = connectionStateRepo.state
     val savedServers = preferences.savedServers
-    val lastHost = preferences.lastHost
-    val lastPort = preferences.lastPort
     val usbMode = preferences.usbMode
-    val rttMs = webSocketClient.rttMs
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
     // Phase 1 data
     val serverInfo = phaseOneHandler.serverInfo
     val suggestedConfig = phaseOneHandler.suggestedConfig
-    val speedTestProgress = phaseOneHandler.speedTestProgress
-    val speedTestStatus = phaseOneHandler.speedTestStatus
-    val speedTestResult = phaseOneHandler.speedTestResult
 
     // Phase 2 data
-    val configProgress = phaseTwoHandler.configProgress
     val monitors = phaseTwoHandler.monitors
-    val iceReady = phaseTwoHandler.iceReady
 
     private val _hostInput = MutableStateFlow("")
     val hostInput: StateFlow<String> = _hostInput.asStateFlow()
@@ -68,18 +62,12 @@ class ConnectionViewModel @Inject constructor(
             webSocketClient.connectionState.collect { wsState ->
                 when (wsState) {
                     WsConnectionState.CONNECTING -> {
-                        // Ensure we're in Connecting state
-                        // (might already be if set by connect())
                         connectionStateRepo.tryTransition(ConnectionState.Connecting)
                     }
                     WsConnectionState.CONNECTED -> {
-                        // Connecting → AwaitingHardwareInfo
                         connectionStateRepo.tryTransition(ConnectionState.AwaitingHardwareInfo)
-                        // Note: PhaseOneHandler.startListening() is called in connect()
-                        // BEFORE webSocketClient.connect() to avoid missing early messages
                     }
                     WsConnectionState.DISCONNECTED -> {
-                        // Only show "Connection lost" if we were past the connecting phase
                         val current = connectionStateRepo.currentState
                         if (current.isConnected && current !is ConnectionState.Connecting) {
                             connectionStateRepo.forceTransition(
@@ -113,12 +101,10 @@ class ConnectionViewModel @Inject constructor(
             preferences.saveServer(SavedServer(host = host, port = port))
         }
 
-        // Start listening BEFORE connecting so no messages are lost
-        // (server may send hardware_info immediately on reconnect)
         val dm = getApplication<Application>().resources.displayMetrics
         phaseOneHandler.startListening(viewModelScope, dm)
 
-        val isUsb = usbMode.stateIn(viewModelScope, SharingStarted.Eagerly, false).value
+        val isUsb = usbMode.value
         webSocketClient.connect(host, port, isUsb = isUsb)
     }
 
@@ -137,9 +123,8 @@ class ConnectionViewModel @Inject constructor(
 
     fun proceed(monitors: Int, resolutionHeight: Int, fps: Int) {
         val config = suggestedConfig.value ?: return
-        val isUsb = usbMode.stateIn(viewModelScope, SharingStarted.Eagerly, false).value
+        val isUsb = usbMode.value
 
-        // Send display_config
         val resWidth = when (resolutionHeight) {
             720 -> 1280
             1080 -> 1920
@@ -157,11 +142,9 @@ class ConnectionViewModel @Inject constructor(
             isUsbMode = isUsb
         )
         webSocketClient.sendText(MessageParser.serialize(displayConfig))
+        phaseTwoHandler.setConfiguredFps(fps)
 
-        // Send proceed
         phaseOneHandler.sendProceed()
-
-        // Start Phase 2 listening
         phaseTwoHandler.startListening(viewModelScope)
     }
 
@@ -173,24 +156,8 @@ class ConnectionViewModel @Inject constructor(
         viewModelScope.launch { preferences.removeServer(server.host, server.port) }
     }
 
-    fun startStreaming() {
-        phaseTwoHandler.sendProceedPhase3()
-        phaseTwoHandler.sendStartStreaming()
-    }
-
     fun resumeStreaming() {
-        webSocketClient.sendText(MessageParser.serialize(
-            com.reka.remoteplay.core.model.ResumeStreamingMessage()
-        ))
+        webSocketClient.sendText(MessageParser.serialize(ResumeStreamingMessage()))
         connectionStateRepo.forceTransition(ConnectionState.Streaming)
-    }
-
-    override fun onCleared() {
-        super.onCleared()
-        // Do NOT disconnect WebSocket or reset PhaseTwoHandler here!
-        // These are @Singleton shared with StreamingViewModel.
-        // When ConnectionRoute is popped during navigation to StreamingScreen,
-        // onCleared fires but streaming still needs active WS + WebRTC state.
-        // Cleanup happens in StreamingViewModel.disconnect() or explicit disconnect().
     }
 }

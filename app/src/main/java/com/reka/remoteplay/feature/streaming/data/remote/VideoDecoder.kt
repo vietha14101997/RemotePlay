@@ -3,6 +3,7 @@ package com.reka.remoteplay.feature.streaming.data.remote
 import android.media.MediaCodec
 import android.media.MediaCodecList
 import android.media.MediaFormat
+import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
@@ -15,11 +16,8 @@ import kotlin.concurrent.withLock
 /**
  * H.265/H.264 hardware decoder using MediaCodec async callback API.
  *
- * Key patterns from VR client H265StreamReceiver:
- * - IDR gating: Drop P-frames until first IDR bootstraps decoder
- * - Prepend codec config to first IDR
- * - Async callbacks for stable buffer management (no polling = no drops)
- * - Dedicated handler thread for codec callbacks
+ * Uses async callbacks on a dedicated high-priority thread for lowest latency.
+ * releaseOutputBuffer with timestamp=nanoTime() for immediate Surface rendering.
  */
 class VideoDecoder(
     private val monitorIndex: Int,
@@ -33,10 +31,7 @@ class VideoDecoder(
     private var firstFrameRendered = false
     private val lock = ReentrantLock()
 
-    // Async callback: available input buffer indices
     private val availableInputBuffers = ConcurrentLinkedQueue<Int>()
-
-    // Dedicated thread for MediaCodec callbacks
     private var callbackThread: HandlerThread? = null
     private var callbackHandler: Handler? = null
 
@@ -88,14 +83,23 @@ class VideoDecoder(
         val csd = codecConfigData ?: return
 
         try {
-            // Create callback thread
-            callbackThread = HandlerThread("Decoder-$monitorIndex").apply { start() }
+            // High-priority callback thread — minimizes scheduling delay
+            callbackThread = HandlerThread("Decoder-$monitorIndex").apply {
+                priority = Thread.MAX_PRIORITY
+                start()
+            }
             callbackHandler = Handler(callbackThread!!.looper)
 
             val mimeType = if (codec == "H265") "video/hevc" else "video/avc"
             val format = MediaFormat.createVideoFormat(mimeType, 1920, 1080).apply {
-                setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+                }
                 setInteger(MediaFormat.KEY_PRIORITY, 0)
+                setInteger(MediaFormat.KEY_OPERATING_RATE, Short.MAX_VALUE.toInt())
+                setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 512 * 1024)
+                try { setInteger("output-reorder-depth", 0) } catch (_: Exception) {}
+                try { setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0) } catch (_: Exception) {}
                 setByteBuffer("csd-0", ByteBuffer.wrap(csd))
             }
 
@@ -108,7 +112,6 @@ class VideoDecoder(
 
             val mc = MediaCodec.createByCodecName(codecName)
 
-            // Set async callback BEFORE configure
             mc.setCallback(object : MediaCodec.Callback() {
                 override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {
                     availableInputBuffers.offer(index)
@@ -116,23 +119,24 @@ class VideoDecoder(
 
                 override fun onOutputBufferAvailable(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
                     try {
-                        codec.releaseOutputBuffer(index, info.size > 0)
+                        // Render with timestamp=NOW for immediate display (bypass vsync queue)
+                        if (info.size > 0) {
+                            codec.releaseOutputBuffer(index, System.nanoTime())
+                        } else {
+                            codec.releaseOutputBuffer(index, false)
+                        }
                         if (!firstFrameRendered && info.size > 0) {
                             firstFrameRendered = true
                             Log.i(TAG, "[$monitorIndex] First frame rendered!")
                             onFirstFrame?.invoke()
                         }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "[$monitorIndex] Output release error: ${e.message}")
-                    }
+                    } catch (_: Exception) {}
                 }
 
                 override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) {
-                    Log.e(TAG, "[$monitorIndex] Codec error: ${e.message}, recoverable=${e.isRecoverable}")
+                    Log.e(TAG, "[$monitorIndex] Codec error: ${e.message}")
                     if (e.isRecoverable) {
-                        lock.withLock {
-                            flush()
-                        }
+                        lock.withLock { flush() }
                     }
                 }
 
@@ -154,9 +158,7 @@ class VideoDecoder(
 
     private fun submitFrame(data: ByteArray, isKeyFrame: Boolean) {
         val mc = mediaCodec ?: return
-
-        // Get available input buffer from async callback queue
-        val inputIndex = availableInputBuffers.poll() ?: return // No buffer available, drop frame
+        val inputIndex = availableInputBuffers.poll() ?: return
 
         try {
             val inputBuffer = mc.getInputBuffer(inputIndex) ?: return
@@ -187,7 +189,6 @@ class VideoDecoder(
         try {
             availableInputBuffers.clear()
             mediaCodec?.flush()
-            // After flush in async mode, need to call start() to re-enter Running state
             mediaCodec?.start()
             decoderBootstrapped = false
             Log.i(TAG, "[$monitorIndex] Flushed, waiting for IDR")

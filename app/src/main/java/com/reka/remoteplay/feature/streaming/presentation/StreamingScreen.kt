@@ -1,5 +1,7 @@
 package com.reka.remoteplay.feature.streaming.presentation
 
+import android.app.Activity
+import android.content.pm.ActivityInfo
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.compose.animation.*
@@ -7,14 +9,13 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Keyboard
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -26,14 +27,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.reka.remoteplay.core.model.MonitorInfoDto
 import com.reka.remoteplay.feature.connection.domain.model.ConnectionState
-import kotlinx.coroutines.withTimeoutOrNull
-import android.app.Activity
-import android.content.pm.ActivityInfo
-import android.view.WindowInsets
-import android.view.WindowInsetsController
+import com.reka.remoteplay.ui.theme.*
 import kotlinx.coroutines.delay
 
 @Composable
@@ -53,13 +53,16 @@ fun StreamingScreen(
     DisposableEffect(Unit) {
         val activity = context as? Activity ?: return@DisposableEffect onDispose {}
         activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-        val controller = activity.window.insetsController
-        controller?.hide(WindowInsets.Type.systemBars())
-        controller?.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        
+        val window = activity.window
+        val controller = WindowCompat.getInsetsController(window, window.decorView)
+        controller.hide(WindowInsetsCompat.Type.systemBars())
+        controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        
         onDispose {
             activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-            controller?.show(WindowInsets.Type.systemBars())
-            controller?.systemBarsBehavior = WindowInsetsController.BEHAVIOR_DEFAULT
+            controller.show(WindowInsetsCompat.Type.systemBars())
+            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
         }
     }
 
@@ -88,15 +91,13 @@ fun StreamingScreen(
             .background(Color.Black)
     ) {
         // ===== Persistent Video Surface =====
-        // ONE SurfaceView lives for the entire streaming session.
-        // Switching monitors swaps the decoder on the SAME Surface — no recreation.
         val activeMonitorInfo = monitors.getOrNull(activeMonitor)
         val videoAspectRatio = if (activeMonitorInfo != null) {
             activeMonitorInfo.width.toFloat() / activeMonitorInfo.height.toFloat().coerceAtLeast(1f)
         } else 16f / 9f
 
         // Video area within the Box (centered, aspect-ratio constrained)
-        BoxWithConstraints(
+        Box(
             modifier = Modifier
                 .align(Alignment.Center)
                 .aspectRatio(videoAspectRatio)
@@ -126,7 +127,7 @@ fun StreamingScreen(
                 contentAlignment = Alignment.Center
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    CircularProgressIndicator(color = Color(0xFF58A6FF))
+                    CircularProgressIndicator(color = AppAccent)
                     Spacer(modifier = Modifier.height(16.dp))
                     Text("Waiting for video...", color = Color.White, fontSize = 14.sp)
                 }
@@ -211,9 +212,9 @@ private fun FloatingMenuButton(
                 Icons.Default.Menu,
                 contentDescription = "Menu",
                 tint = when {
-                    rttMs < 20 -> Color(0xFF3FB950)
-                    rttMs < 50 -> Color(0xFFD29922)
-                    else -> Color(0xFFF85149)
+                    rttMs < 20 -> AppGreenLight
+                    rttMs < 50 -> AppYellow
+                    else -> AppRedLight
                 },
                 modifier = Modifier.size(22.dp)
             )
@@ -247,12 +248,6 @@ private fun VideoSurface(
 }
 
 // ===== Touchpad layer =====
-// Gesture map:
-// - Single tap + release    → left click
-// - Single tap + drag       → move cursor (touchpad)
-// - Long press              → right click
-// - Double tap + release    → double click
-// - Double tap + drag       → left button DOWN + move (drag & drop, select text)
 
 @Composable
 private fun TouchpadLayer(
@@ -260,18 +255,14 @@ private fun TouchpadLayer(
     activeMonitor: Int,
     modifier: Modifier = Modifier
 ) {
-    // Shared flag: when true, single-finger handler ignores all events
     var isScrolling by remember { mutableStateOf(false) }
 
     Box(
         modifier = modifier
-            // Two-finger gestures: tap = right click, drag = scroll
             .pointerInput(activeMonitor) {
                 val slop = viewConfiguration.touchSlop
                 awaitEachGesture {
-                    // Wait for first finger
                     awaitFirstDown(requireUnconsumed = false)
-                    // Wait briefly for second finger
                     val secondDown = withTimeoutOrNull(150) {
                         while (true) {
                             val event = awaitPointerEvent()
@@ -279,12 +270,9 @@ private fun TouchpadLayer(
                                 return@withTimeoutOrNull true
                             }
                         }
-                        @Suppress("UNREACHABLE_CODE")
-                        false
                     }
                     if (secondDown != true) return@awaitEachGesture
 
-                    // Two fingers detected
                     isScrolling = true
                     var accumY = 0f
                     var accumX = 0f
@@ -325,43 +313,32 @@ private fun TouchpadLayer(
                         }
                     }
 
-                    // If barely moved → two-finger tap = right click
                     if (totalMoved < slop * 2) {
                         viewModel.sendMouseButton(1.toByte(), true)
                         viewModel.sendMouseButton(1.toByte(), false)
                     }
                 }
             }
-            // Single-finger gestures
             .pointerInput(activeMonitor, isScrolling) {
                 val longPressMs = viewConfiguration.longPressTimeoutMillis
                 val doubleTapMs = viewConfiguration.doubleTapTimeoutMillis
                 val touchSlop = viewConfiguration.touchSlop
 
-                while (true) {
-                    // Wait for first finger down
-                    val down = awaitPointerEventScope {
+                awaitPointerEventScope {
+                    while (true) {
                         awaitFirstDown(requireUnconsumed = false)
-                    }
 
-                    // Skip if two-finger scroll is active
-                    if (isScrolling) {
-                        awaitPointerEventScope {
+                        if (isScrolling) {
                             while (true) {
                                 val e = awaitPointerEvent()
                                 if (e.changes.none { it.pressed }) break
                             }
+                            continue
                         }
-                        continue
-                    }
 
-                    var tapCount = 1
-                    var isDrag = false
-                    var isLongPress = false
-                    var isDoubleTapDrag = false
+                        var isDrag = false
+                        var isDoubleTapDrag = false
 
-                    awaitPointerEventScope {
-                        // Wait for up, drag, or long press
                         val upOrDrag = withTimeoutOrNull(longPressMs) {
                             var totalDx = 0f
                             var totalDy = 0f
@@ -370,7 +347,6 @@ private fun TouchpadLayer(
                                 val pointer = event.changes.firstOrNull() ?: continue
 
                                 if (!pointer.pressed) {
-                                    // Finger released
                                     pointer.consume()
                                     return@withTimeoutOrNull "up"
                                 }
@@ -380,20 +356,15 @@ private fun TouchpadLayer(
                                 totalDx += dx; totalDy += dy
 
                                 if (totalDx * totalDx + totalDy * totalDy > touchSlop * touchSlop) {
-                                    // Drag detected
                                     isDrag = true
                                     pointer.consume()
                                     return@withTimeoutOrNull "drag"
                                 }
                             }
-                            @Suppress("UNREACHABLE_CODE")
-                            ""
                         }
 
                         when (upOrDrag) {
                             null -> {
-                                // Timeout = long press — if user drags, move cursor
-                                isLongPress = true
                                 while (true) {
                                     val event = awaitPointerEvent()
                                     val pointer = event.changes.firstOrNull() ?: break
@@ -409,18 +380,14 @@ private fun TouchpadLayer(
                             }
 
                             "up" -> {
-                                // Quick release — check for second tap (double tap)
                                 val secondDown = withTimeoutOrNull(doubleTapMs) {
                                     awaitFirstDown(requireUnconsumed = false)
                                 }
 
                                 if (secondDown == null) {
-                                    // No second tap → single click
                                     viewModel.sendMouseButton(0, true)
                                     viewModel.sendMouseButton(0, false)
                                 } else {
-                                    tapCount = 2
-                                    // Second finger down — wait for up or drag
                                     val secondResult = withTimeoutOrNull(longPressMs) {
                                         var totalDx = 0f
                                         var totalDy = 0f
@@ -439,36 +406,29 @@ private fun TouchpadLayer(
                                                 return@withTimeoutOrNull "drag"
                                             }
                                         }
-                                        @Suppress("UNREACHABLE_CODE")
-                                        ""
                                     }
 
                                     when (secondResult) {
                                         "up", null -> {
-                                            // Double tap + release → double click
                                             viewModel.sendMouseButton(0, true)
                                             viewModel.sendMouseButton(0, false)
                                             viewModel.sendMouseButton(0, true)
                                             viewModel.sendMouseButton(0, false)
                                         }
                                         "drag" -> {
-                                            // Double tap + drag → left button held + move
                                             isDoubleTapDrag = true
-                                            viewModel.sendMouseButton(0, true) // Hold left
+                                            viewModel.sendMouseButton(0, true)
                                         }
                                     }
                                 }
                             }
 
                             "drag" -> {
-                                // Single tap + drag → move cursor (touchpad)
                                 isDrag = true
                             }
                         }
 
-                        // Handle ongoing drag (both touchpad drag and double-tap drag)
                         if (isDrag || isDoubleTapDrag) {
-                            // Accumulate fractional pixels to avoid losing sub-pixel movements
                             var accumX = 0f
                             var accumY = 0f
 
@@ -501,8 +461,6 @@ private fun TouchpadLayer(
     )
 }
 
-// ===== Toolbar =====
-
 @Composable
 private fun FloatingToolbar(
     rttMs: Float,
@@ -512,7 +470,7 @@ private fun FloatingToolbar(
 ) {
     Card(
         shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xCC21262D)),
+        colors = CardDefaults.cardColors(containerColor = AppSurface.copy(alpha = 0.8f)),
         modifier = modifier
     ) {
         Row(
@@ -523,9 +481,9 @@ private fun FloatingToolbar(
             Text(
                 text = "${rttMs.toInt()}ms",
                 color = when {
-                    rttMs < 20 -> Color(0xFF3FB950)
-                    rttMs < 50 -> Color(0xFFD29922)
-                    else -> Color(0xFFF85149)
+                    rttMs < 20 -> AppGreenLight
+                    rttMs < 50 -> AppYellow
+                    else -> AppRedLight
                 },
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold
@@ -534,13 +492,11 @@ private fun FloatingToolbar(
                 Icon(Icons.Default.Keyboard, "Keyboard", tint = Color.White, modifier = Modifier.size(20.dp))
             }
             IconButton(onClick = onBack, modifier = Modifier.size(36.dp)) {
-                Icon(Icons.Default.ArrowBack, "Back", tint = Color(0xFFF85149), modifier = Modifier.size(20.dp))
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = AppRedLight, modifier = Modifier.size(20.dp))
             }
         }
     }
 }
-
-// ===== Monitor Tab Bar =====
 
 @Composable
 private fun MonitorTabBar(
@@ -551,7 +507,7 @@ private fun MonitorTabBar(
 ) {
     Card(
         shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xCC21262D)),
+        colors = CardDefaults.cardColors(containerColor = AppSurface.copy(alpha = 0.8f)),
         modifier = modifier
     ) {
         Row(
@@ -562,13 +518,13 @@ private fun MonitorTabBar(
                 val isActive = index == activeIndex
                 Surface(
                     shape = RoundedCornerShape(16.dp),
-                    color = if (isActive) Color(0xFF58A6FF) else Color.Transparent,
+                    color = if (isActive) AppAccent else Color.Transparent,
                     modifier = Modifier.clickable { onSelect(index) }
                 ) {
                     Text(
                         text = "${index + 1}",
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                        color = if (isActive) Color.White else Color(0xFF8B949E),
+                        color = if (isActive) Color.White else AppTextTertiary,
                         fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal,
                         fontSize = 14.sp
                     )
