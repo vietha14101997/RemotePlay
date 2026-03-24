@@ -1,43 +1,53 @@
 package com.reka.remoteplay.feature.streaming.data.remote
 
+import android.content.Context
+import android.database.ContentObserver
 import android.media.AudioAttributes
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioTrack
+import android.os.Handler
+import android.os.Looper
+import android.provider.Settings
 import android.util.Log
+import com.reka.remoteplay.feature.connection.data.local.ConnectionPreferences
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Audio playback for remote desktop streaming.
+ * Low-latency audio playback for remote desktop streaming via DataChannel PCM.
  *
- * In per-track PC mode, audio comes via RTP on the main PeerConnection.
- * libwebrtc handles Opus decoding and plays via its internal AudioTrack.
- *
- * This class handles DataChannel audio fallback (raw PCM from DC)
- * and provides volume/mute control.
+ * Uses VOICE_COMMUNICATION + LOW_LATENCY for minimum latency.
+ * Volume controlled by call volume slider.
+ * Speaker forced via MODE_IN_COMMUNICATION + speakerphone.
  */
 @Singleton
 class AudioPlayer @Inject constructor(
-    private val webRtcManager: WebRtcManager
+    @param:ApplicationContext private val context: Context,
+    private val webRtcManager: WebRtcManager,
+    private val preferences: ConnectionPreferences
 ) {
     private var audioTrack: AudioTrack? = null
     private var dcAudioJob: Job? = null
     private var _muted = false
+    private var savedCallVolume = -1
+    private var audioScope: CoroutineScope? = null
+    private var volumeObserver: ContentObserver? = null
 
     companion object {
         private const val TAG = "AudioPlayer"
         private const val SAMPLE_RATE = 48000
         private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_OUT_STEREO
         private const val ENCODING = AudioFormat.ENCODING_PCM_16BIT
+        private const val VOLUME_BOOST = 2.5f // Amplify PCM samples before writing
     }
 
-    /**
-     * Start listening for DataChannel audio frames.
-     * Note: RTP audio is handled automatically by libwebrtc.
-     */
     fun startDataChannelAudio(scope: CoroutineScope) {
         if (audioTrack != null) return
 
@@ -45,8 +55,8 @@ class AudioPlayer @Inject constructor(
         audioTrack = AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_GAME)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build()
             )
             .setAudioFormat(
@@ -61,16 +71,67 @@ class AudioPlayer @Inject constructor(
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
 
-        audioTrack?.play()
-        Log.d(TAG, "AudioTrack started (DC fallback mode)")
+        // Force speaker output (not earpiece)
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        savedCallVolume = audioManager.getStreamVolume(AudioManager.STREAM_VOICE_CALL)
+        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+        @Suppress("DEPRECATION")
+        audioManager.isSpeakerphoneOn = true
 
-        dcAudioJob = scope.launch {
-            webRtcManager.audioData.collect { data ->
-                if (!_muted) {
-                    audioTrack?.write(data, 0, data.size)
+        // Restore last stream volume (if saved from previous session)
+        val lastVol = runBlocking { preferences.streamVolume.first() }
+        if (lastVol >= 0) {
+            val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)
+            audioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL, lastVol.coerceAtMost(max), 0)
+            Log.d(TAG, "Restored stream volume to $lastVol")
+        }
+
+        audioScope = scope
+        audioTrack?.play()
+
+        // Watch volume changes and persist immediately
+        volumeObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) {
+                val vol = audioManager.getStreamVolume(AudioManager.STREAM_VOICE_CALL)
+                audioScope?.launch {
+                    try { preferences.saveStreamVolume(vol) } catch (_: Exception) {}
                 }
             }
         }
+        context.contentResolver.registerContentObserver(
+            Settings.System.CONTENT_URI, true, volumeObserver!!
+        )
+
+        Log.d(TAG, "AudioTrack started (VOICE_COMM, LOW_LATENCY, speaker=true, preVol=$savedCallVolume, boost=$VOLUME_BOOST)")
+
+        dcAudioJob = scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            var count = 0L
+            webRtcManager.audioData.collect { data ->
+                if (!_muted) {
+                    val boosted = amplify(data)
+                    audioTrack?.write(boosted, 0, boosted.size)
+                    count++
+                    if (count == 1L) {
+                        Log.i(TAG, "First audio: ${data.size}B, playState=${audioTrack?.playState}")
+                    }
+                    if (count % 500 == 0L) {
+                        Log.d(TAG, "Audio packets: $count (last=${data.size}B)")
+                    }
+                }
+            }
+        }
+    }
+
+    /** Amplify PCM16 samples by VOLUME_BOOST factor, with clipping */
+    private fun amplify(data: ByteArray): ByteArray {
+        val result = ByteArray(data.size)
+        for (i in 0 until data.size - 1 step 2) {
+            val sample = (data[i + 1].toInt() shl 8) or (data[i].toInt() and 0xFF)
+            val amplified = (sample * VOLUME_BOOST).toInt().coerceIn(-32768, 32767)
+            result[i] = (amplified and 0xFF).toByte()
+            result[i + 1] = (amplified shr 8).toByte()
+        }
+        return result
     }
 
     fun setMuted(muted: Boolean) {
@@ -83,16 +144,39 @@ class AudioPlayer @Inject constructor(
         }
     }
 
-    val isMuted: Boolean get() = _muted
-
     fun stop() {
+        // Unregister volume observer
+        volumeObserver?.let { context.contentResolver.unregisterContentObserver(it) }
+        volumeObserver = null
+
         dcAudioJob?.cancel()
         dcAudioJob = null
+
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
+        // Final save of current volume (safety net — observer already saved on each change)
+        val currentVol = audioManager.getStreamVolume(AudioManager.STREAM_VOICE_CALL)
+        audioScope?.launch {
+            try { preferences.saveStreamVolume(currentVol) } catch (_: Exception) {}
+        }
+        Log.d(TAG, "Saved stream volume: $currentVol")
+
         try {
             audioTrack?.stop()
             audioTrack?.release()
         } catch (_: Exception) {}
         audioTrack = null
+
+        // Restore call volume to pre-stream level
+        if (savedCallVolume >= 0) {
+            audioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL, savedCallVolume, 0)
+            Log.d(TAG, "Restored pre-stream call volume to $savedCallVolume")
+            savedCallVolume = -1
+        }
+        @Suppress("DEPRECATION")
+        audioManager.isSpeakerphoneOn = false
+        audioManager.mode = AudioManager.MODE_NORMAL
+        audioScope = null
         Log.d(TAG, "AudioTrack stopped")
     }
 }

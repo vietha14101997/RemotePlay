@@ -11,8 +11,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicLong
@@ -26,10 +24,7 @@ class SpeedTestClient @Inject constructor(
     private val webSocketClient: WebSocketClient
 ) {
     private val _progress = MutableStateFlow(0f)
-    @Suppress("unused") val progress: StateFlow<Float> = _progress.asStateFlow()
-
     private val _status = MutableStateFlow("")
-    @Suppress("unused") val status: StateFlow<String> = _status.asStateFlow()
 
     // Bandwidth test state
     private val bytesReceived = AtomicLong(0)

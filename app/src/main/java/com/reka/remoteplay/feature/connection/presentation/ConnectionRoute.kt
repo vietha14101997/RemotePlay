@@ -1,6 +1,7 @@
 package com.reka.remoteplay.feature.connection.presentation
 
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.reka.remoteplay.feature.connection.domain.model.ConnectionState
 
@@ -16,14 +17,12 @@ fun ConnectionRoute(
     LaunchedEffect(connectionState) {
         when (connectionState) {
             is ConnectionState.ConfiguringSettings -> {
-                // Phase 1 complete → show config review screen
                 if (!navigated) {
                     navigated = true
                     onNavigateToConfigReview()
                 }
             }
             is ConnectionState.Disconnected, is ConnectionState.Error -> {
-                // Reset navigation flag on disconnect
                 navigated = false
             }
             else -> {}
@@ -31,23 +30,20 @@ fun ConnectionRoute(
     }
 
     val savedServers by viewModel.savedServers.collectAsState(initial = emptyList())
-    val hostInput by viewModel.hostInput.collectAsState()
-    val portInput by viewModel.portInput.collectAsState()
-    val usbMode by viewModel.usbMode.collectAsState(initial = false)
+    val discoveredServers by viewModel.discoveredServers.collectAsState()
+    val isScanning by viewModel.isScanning.collectAsState()
 
     ConnectionScreen(
         connectionState = connectionState,
         savedServers = savedServers,
-        hostInput = hostInput,
-        portInput = portInput,
-        usbMode = usbMode,
-        onHostChanged = viewModel::onHostChanged,
-        onPortChanged = viewModel::onPortChanged,
-        onConnect = viewModel::connect,
+        discoveredServers = discoveredServers,
+        isScanning = isScanning,
+        onStartScan = viewModel::startScan,
+        onStopScan = viewModel::stopScan,
         onDisconnect = viewModel::disconnect,
         onConnectToServer = viewModel::connectToServer,
-        onRemoveServer = viewModel::removeServer,
-        onSetUsbMode = viewModel::setUsbMode
+        onConnectToDiscovered = viewModel::connectToDiscovered,
+        onRemoveServer = viewModel::removeServer
     )
 }
 
@@ -60,20 +56,24 @@ fun ConfigReviewRoute(
     val connectionState by viewModel.connectionState.collectAsState()
     val serverInfo by viewModel.serverInfo.collectAsState()
     val suggestedConfig by viewModel.suggestedConfig.collectAsState()
+    val savedMonitors by viewModel.savedMonitors.collectAsState()
+    val savedResolution by viewModel.savedResolution.collectAsState()
+    val savedFps by viewModel.savedFps.collectAsState()
 
-    // Track if stream was paused (came back from StreamingScreen)
-    val isPaused = remember { mutableStateOf(false) }
+    // Track if stream was paused — survives recomposition/backstack
+    var isPaused by rememberSaveable { mutableStateOf(false) }
+    val connectionType = remember { viewModel.getConnectionType() }
 
-    // Navigate to streaming when ICE completes
-    var navigated by remember { mutableStateOf(false) }
+    // Navigate to streaming when ICE completes (Start flow only, not Resume)
+    var navigated by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(connectionState) {
-        if (!navigated) {
+        if (!navigated && !isPaused) {
             when (connectionState) {
                 is ConnectionState.ReadyToStream,
                 is ConnectionState.StartingStream,
                 is ConnectionState.Streaming -> {
                     navigated = true
-                    isPaused.value = true // Next time we return, show Resume
+                    isPaused = true
                     onNavigateToStreaming()
                 }
                 else -> {}
@@ -86,19 +86,22 @@ fun ConfigReviewRoute(
             serverInfo = serverInfo!!,
             suggestedConfig = suggestedConfig!!,
             connectionState = connectionState,
-            isPaused = isPaused.value,
+            isPaused = isPaused,
+            savedMonitors = savedMonitors,
+            savedResolution = savedResolution,
+            savedFps = savedFps,
+            connectionType = connectionType,
             onProceed = { monitors, resolution, fps ->
-                navigated = false // Allow re-navigation after new Start
+                navigated = false
+                isPaused = false
                 viewModel.proceed(monitors, resolution, fps)
             },
             onResume = {
-                navigated = false
-                // Resume streaming — navigate back to StreamingScreen
                 viewModel.resumeStreaming()
                 onNavigateToStreaming()
             },
             onBack = {
-                isPaused.value = false
+                isPaused = false
                 viewModel.disconnect()
                 onBack()
             }

@@ -1,3 +1,59 @@
 <resources>
     <string name="app_name">Remote Play</string>
+
+    <!-- ConnectionScreen -->
+    <string name="connect_to_pc">Connect to your PC</string>
+    <string name="find_server">Find Server</string>
+    <string name="searching_servers">Searching for servers…</string>
+    <string name="available_servers">AVAILABLE SERVERS</string>
+    <string name="stop">Stop</string>
+    <string name="cancel">Cancel</string>
+    <string name="recent_connections">RECENT CONNECTIONS</string>
+    <string name="remove">Remove</string>
+
+    <!-- ConfigReviewScreen -->
+    <string name="stream_configuration">Stream Configuration</string>
+    <string name="back">Back</string>
+    <string name="server">Server</string>
+    <string name="network">Network</string>
+    <string name="name_label">Name</string>
+    <string name="gpu_label">GPU</string>
+    <string name="cpu_label">CPU</string>
+    <string name="encoder_label">Encoder</string>
+    <string name="monitors_label">Monitors</string>
+    <string name="connection_label">Connection</string>
+    <string name="ping_label">Ping</string>
+    <string name="bandwidth_label">Bandwidth</string>
+    <string name="jitter_label">Jitter</string>
+    <string name="stream_settings">Stream Settings</string>
+    <string name="resolution">Resolution</string>
+    <string name="frame_rate">Frame Rate</string>
+    <string name="hardware">Hardware</string>
+    <string name="software">Software</string>
+    <string name="displays_format">%d displays</string>
+    <string name="gpu_format">%1$s (%2$sGB)</string>
+    <string name="encoder_format">%1$s (%2$s)</string>
+    <string name="ping_format">%.1f ms</string>
+    <string name="bandwidth_format">%.1f Mbps</string>
+    <string name="jitter_format">%.1f ms</string>
+    <string name="bitrate_format">Bitrate: %d Mbps (auto)</string>
+    <string name="fps_format">%d FPS</string>
+    <string name="resolution_format">%dp</string>
+    <string name="start">Start</string>
+    <string name="resume">Resume</string>
+    <string name="setting_up">Setting up…</string>
+    <string name="connecting">Connecting…</string>
+    <string name="starting">Starting…</string>
+    <string name="press_back_to_disconnect">Press back again to disconnect</string>
+
+    <!-- StreamingScreen -->
+    <string name="waiting_for_video">Waiting for video…</string>
+    <string name="press_back_to_pause">Press back again to pause</string>
+    <string name="press_back_to_show_ui">Press back to show UI</string>
+    <string name="ping_ms_format">%d ms</string>
+    <string name="monitor_index_format">%d</string>
+
+    <!-- PerformanceOverlay -->
+    <string name="rtt_format">RTT: %dms</string>
+    <string name="monitor_info_format">Monitor: %1$d/%2$d</string>
 </resources>

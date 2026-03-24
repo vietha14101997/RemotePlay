@@ -26,7 +26,7 @@ data class SavedServer(
 
 @Singleton
 class ConnectionPreferences @Inject constructor(
-    @ApplicationContext private val context: Context
+    @param:ApplicationContext private val context: Context
 ) {
     private val moshi = Moshi.Builder().addLast(KotlinJsonAdapterFactory()).build()
     private val serverListType = Types.newParameterizedType(List::class.java, SavedServer::class.java)
@@ -36,7 +36,10 @@ class ConnectionPreferences @Inject constructor(
         val SAVED_SERVERS = stringPreferencesKey("saved_servers")
         val LAST_HOST = stringPreferencesKey("last_host")
         val LAST_PORT = intPreferencesKey("last_port")
-        val USB_MODE = booleanPreferencesKey("usb_mode")
+        val STREAM_MONITORS = intPreferencesKey("stream_monitors")
+        val STREAM_RESOLUTION = intPreferencesKey("stream_resolution")
+        val STREAM_FPS = intPreferencesKey("stream_fps")
+        val STREAM_VOLUME = intPreferencesKey("stream_volume")
     }
 
     val savedServers: Flow<List<SavedServer>> = context.dataStore.data.map { prefs ->
@@ -45,8 +48,11 @@ class ConnectionPreferences @Inject constructor(
     }
 
     val lastHost: Flow<String> = context.dataStore.data.map { it[Keys.LAST_HOST] ?: "" }
-    val lastPort: Flow<Int> = context.dataStore.data.map { it[Keys.LAST_PORT] ?: 8288 }
-    val usbMode: Flow<Boolean> = context.dataStore.data.map { it[Keys.USB_MODE] ?: false }
+
+    val streamMonitors: Flow<Int> = context.dataStore.data.map { it[Keys.STREAM_MONITORS] ?: 1 }
+    val streamResolution: Flow<Int> = context.dataStore.data.map { it[Keys.STREAM_RESOLUTION] ?: 1080 }
+    val streamFps: Flow<Int> = context.dataStore.data.map { it[Keys.STREAM_FPS] ?: 60 }
+    val streamVolume: Flow<Int> = context.dataStore.data.map { it[Keys.STREAM_VOLUME] ?: -1 }
 
     suspend fun saveServer(server: SavedServer) {
         context.dataStore.edit { prefs ->
@@ -73,7 +79,15 @@ class ConnectionPreferences @Inject constructor(
         }
     }
 
-    suspend fun setUsbMode(enabled: Boolean) {
-        context.dataStore.edit { it[Keys.USB_MODE] = enabled }
+    suspend fun saveStreamSettings(monitors: Int, resolution: Int, fps: Int) {
+        context.dataStore.edit { prefs ->
+            prefs[Keys.STREAM_MONITORS] = monitors
+            prefs[Keys.STREAM_RESOLUTION] = resolution
+            prefs[Keys.STREAM_FPS] = fps
+        }
+    }
+
+    suspend fun saveStreamVolume(volume: Int) {
+        context.dataStore.edit { it[Keys.STREAM_VOLUME] = volume }
     }
 }

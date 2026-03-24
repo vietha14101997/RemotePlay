@@ -16,8 +16,9 @@ import kotlin.concurrent.withLock
 /**
  * H.265/H.264 hardware decoder using MediaCodec async callback API.
  *
- * Uses async callbacks on a dedicated high-priority thread for lowest latency.
- * releaseOutputBuffer with timestamp=nanoTime() for immediate Surface rendering.
+ * Qualcomm c2.qti.hevc.decoder has inherent 1-frame pipeline delay (held=1).
+ * This is hardware behavior that cannot be changed via MediaFormat configuration.
+ * The server compensates by encoding extra frames on idle transitions.
  */
 class VideoDecoder(
     private val monitorIndex: Int,
@@ -35,6 +36,26 @@ class VideoDecoder(
     private var callbackThread: HandlerThread? = null
     private var callbackHandler: Handler? = null
 
+    /** Frames skipped (released without rendering) due to queue congestion. */
+    @Volatile var framesSkipped = 0L
+        private set
+
+    /** Frames actually rendered to Surface. */
+    @Volatile var framesRendered = 0L
+        private set
+
+    /** Total frames submitted to decoder input. */
+    @Volatile var framesSubmitted = 0L
+        private set
+
+    /** Total frames output by decoder. */
+    @Volatile var framesDecoded = 0L
+        private set
+
+    /** Frames dropped because no input buffer was available. */
+    @Volatile var framesDroppedNoBuffer = 0L
+        private set
+
     var onFirstFrame: (() -> Unit)? = null
 
     companion object {
@@ -43,37 +64,44 @@ class VideoDecoder(
 
     fun setSurface(newSurface: Surface) = lock.withLock {
         surface = newSurface
+        Log.d(TAG, "[$monitorIndex] setSurface: valid=${newSurface.isValid}, hasConfig=${codecConfigData != null}, configured=$configured")
         if (codecConfigData != null && !configured) {
             configureCodec()
         }
     }
 
-    fun feedParsedFrame(frame: VideoFrameParser.ParsedFrame) = lock.withLock {
+    fun feedParsedFrame(frame: VideoFrameParser.ParsedFrame) {
         if (frame.data.isEmpty()) return
 
-        when (frame.type) {
-            VideoFrameParser.FrameType.CODEC_CONFIG -> {
-                codecConfigData = frame.data
-                if (surface != null && !configured) {
-                    configureCodec()
+        // Fast path for P-frames: skip lock when possible (most common case)
+        if (frame.type == VideoFrameParser.FrameType.PFRAME) {
+            if (!configured || !decoderBootstrapped) return
+            submitFrame(frame.data, isKeyFrame = false)
+            return
+        }
+
+        lock.withLock {
+            when (frame.type) {
+                VideoFrameParser.FrameType.CODEC_CONFIG -> {
+                    codecConfigData = frame.data
+                    if (surface != null && !configured) {
+                        configureCodec()
+                    }
                 }
-            }
-            VideoFrameParser.FrameType.KEYFRAME -> {
-                if (!configured) {
-                    if (codecConfigData != null && surface != null) configureCodec()
-                    if (!configured) return
+                VideoFrameParser.FrameType.KEYFRAME -> {
+                    if (!configured) {
+                        if (codecConfigData != null && surface != null) configureCodec()
+                        if (!configured) return
+                    }
+                    val feedData = if (!decoderBootstrapped && codecConfigData != null) {
+                        codecConfigData!! + frame.data
+                    } else {
+                        frame.data
+                    }
+                    submitFrame(feedData, isKeyFrame = true)
+                    decoderBootstrapped = true
                 }
-                val feedData = if (!decoderBootstrapped && codecConfigData != null) {
-                    codecConfigData!! + frame.data
-                } else {
-                    frame.data
-                }
-                submitFrame(feedData, isKeyFrame = true)
-                decoderBootstrapped = true
-            }
-            VideoFrameParser.FrameType.PFRAME -> {
-                if (!configured || !decoderBootstrapped) return
-                submitFrame(frame.data, isKeyFrame = false)
+                else -> {}
             }
         }
     }
@@ -83,7 +111,6 @@ class VideoDecoder(
         val csd = codecConfigData ?: return
 
         try {
-            // High-priority callback thread — minimizes scheduling delay
             callbackThread = HandlerThread("Decoder-$monitorIndex").apply {
                 priority = Thread.MAX_PRIORITY
                 start()
@@ -94,12 +121,14 @@ class VideoDecoder(
             val format = MediaFormat.createVideoFormat(mimeType, 1920, 1080).apply {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                     setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+                    setInteger(MediaFormat.KEY_LATENCY, 0)
                 }
                 setInteger(MediaFormat.KEY_PRIORITY, 0)
                 setInteger(MediaFormat.KEY_OPERATING_RATE, Short.MAX_VALUE.toInt())
                 setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 512 * 1024)
                 try { setInteger("output-reorder-depth", 0) } catch (_: Exception) {}
                 try { setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0) } catch (_: Exception) {}
+                try { setInteger("max-dec-frame-buffering", 1) } catch (_: Exception) {}
                 setByteBuffer("csd-0", ByteBuffer.wrap(csd))
             }
 
@@ -110,6 +139,14 @@ class VideoDecoder(
                 return
             }
 
+            val deviceConfig = DecoderErrata.getConfig(codecName)
+            if (deviceConfig.skipLowLatencyFlag && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                try { format.removeKey(MediaFormat.KEY_LOW_LATENCY) } catch (_: Exception) {}
+            }
+
+            val hasLowLatency = DecoderErrata.supportsLowLatency(codecName, mimeType)
+            Log.i(TAG, "[$monitorIndex] Decoder=$codecName, lowLatency=$hasLowLatency, errata=${deviceConfig.notes.ifEmpty { "none" }}")
+
             val mc = MediaCodec.createByCodecName(codecName)
 
             mc.setCallback(object : MediaCodec.Callback() {
@@ -118,14 +155,15 @@ class VideoDecoder(
                 }
 
                 override fun onOutputBufferAvailable(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
+                    if (info.size <= 0) {
+                        try { codec.releaseOutputBuffer(index, false) } catch (_: Exception) {}
+                        return
+                    }
+                    framesDecoded++
                     try {
-                        // Render with timestamp=NOW for immediate display (bypass vsync queue)
-                        if (info.size > 0) {
-                            codec.releaseOutputBuffer(index, System.nanoTime())
-                        } else {
-                            codec.releaseOutputBuffer(index, false)
-                        }
-                        if (!firstFrameRendered && info.size > 0) {
+                        codec.releaseOutputBuffer(index, System.nanoTime())
+                        framesRendered++
+                        if (!firstFrameRendered) {
                             firstFrameRendered = true
                             Log.i(TAG, "[$monitorIndex] First frame rendered!")
                             onFirstFrame?.invoke()
@@ -158,7 +196,22 @@ class VideoDecoder(
 
     private fun submitFrame(data: ByteArray, isKeyFrame: Boolean) {
         val mc = mediaCodec ?: return
-        val inputIndex = availableInputBuffers.poll() ?: return
+        var inputIndex = availableInputBuffers.poll()
+        if (inputIndex == null && isKeyFrame) {
+            val deadline = System.nanoTime() + 5_000_000L
+            while (System.nanoTime() < deadline) {
+                inputIndex = availableInputBuffers.poll()
+                if (inputIndex != null) break
+                Thread.yield()
+            }
+        }
+        if (inputIndex == null) {
+            framesDroppedNoBuffer++
+            if (framesDroppedNoBuffer % 30 == 1L) {
+                Log.w(TAG, "[$monitorIndex] No input buffer (dropped=$framesDroppedNoBuffer, keyframe=$isKeyFrame)")
+            }
+            return
+        }
 
         try {
             val inputBuffer = mc.getInputBuffer(inputIndex) ?: return
@@ -180,6 +233,7 @@ class VideoDecoder(
 
             val flags = if (isKeyFrame) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
             mc.queueInputBuffer(inputIndex, 0, totalSize, System.nanoTime() / 1000, flags)
+            framesSubmitted++
         } catch (e: Exception) {
             Log.e(TAG, "[$monitorIndex] Submit error: ${e.message}")
         }

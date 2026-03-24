@@ -2,15 +2,9 @@ package com.reka.remoteplay.feature.streaming.data.remote
 
 import android.util.Log
 import android.view.Surface
-import com.reka.remoteplay.feature.streaming.domain.model.InputProtocol
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -28,12 +22,16 @@ class VideoDecoderManager @Inject constructor(
     private val parsers = mutableMapOf<Int, VideoFrameParser>()
     private val codecConfigs = mutableMapOf<Int, ByteArray>() // Cached per monitor
     private var activeSurface: Surface? = null
-    private var frameJob: Job? = null
-    private var nudgeJob: Job? = null
     private var codecString = "H265"
-    // Track frame arrivals for idle detection (decoder has gap=1, always holds last frame)
+    private var targetFps = 60
+
+    // Track frame arrivals for FPS monitoring
     @Volatile private var lastFrameNanoTime = 0L
-    @Volatile private var nudgedForCurrentIdle = false
+
+    // FPS monitoring
+    @Volatile private var frameCount = 0L
+    @Volatile private var lastFpsLogTime = 0L
+    @Volatile private var lastFpsLogCount = 0L
 
     private val _activeMonitor = MutableStateFlow(0)
     val activeMonitor: StateFlow<Int> = _activeMonitor.asStateFlow()
@@ -45,8 +43,12 @@ class VideoDecoderManager @Inject constructor(
         private const val TAG = "VideoDecoderManager"
     }
 
+    /** True if codec configs are cached from a previous session (indicates resume scenario) */
+    fun hasCachedCodecConfigs(): Boolean = codecConfigs.isNotEmpty()
+
     fun initialize(monitorCount: Int, codec: String = "H265", fps: Int = 60) {
         codecString = codec
+        targetFps = fps.coerceIn(1, 240)
         for (i in 0 until monitorCount) {
             parsers[i] = VideoFrameParser(i)
         }
@@ -78,62 +80,104 @@ class VideoDecoderManager @Inject constructor(
             Log.i(TAG, "★ Monitor $monitorIndex FIRST FRAME RENDERED ★")
         }
 
-        decoder.setSurface(surface)
-
-        // Apply cached codec config if available
+        // Apply cached codec config BEFORE surface so configureCodec() fires on setSurface()
         val cachedConfig = codecConfigs[monitorIndex]
         if (cachedConfig != null) {
+            Log.d(TAG, "Applying cached codec config for monitor $monitorIndex (${cachedConfig.size} bytes)")
             decoder.feedParsedFrame(VideoFrameParser.ParsedFrame(
                 VideoFrameParser.FrameType.CODEC_CONFIG, cachedConfig
             ))
         }
 
+        decoder.setSurface(surface)
         activeDecoder = decoder
     }
 
-    fun startFrameCollection(scope: CoroutineScope) {
-        frameJob?.cancel()
-        Log.i(TAG, "Starting frame collection")
+    fun startFrameCollection() {
+        Log.i(TAG, "Starting frame collection (direct callback)")
 
-        frameJob = scope.launch(Dispatchers.Default) {
-            webRtcManager.videoFrames.collect { (monitorIndex, data) ->
-                val parser = parsers[monitorIndex] ?: return@collect
-                val frame = parser.parse(data) ?: return@collect
-
-                // Cache codec config for all monitors (needed when switching)
-                if (frame.type == VideoFrameParser.FrameType.CODEC_CONFIG) {
-                    codecConfigs[monitorIndex] = frame.data
-                }
-
-                // Only feed to decoder if this is the active monitor
-                if (monitorIndex == _activeMonitor.value) {
-                    activeDecoder?.feedParsedFrame(frame)
-                    if (frame.type != VideoFrameParser.FrameType.CODEC_CONFIG) {
-                        lastFrameNanoTime = System.nanoTime()
-                        nudgedForCurrentIdle = false
-                    }
-                }
-            }
+        // Wire direct callback from WebRTC thread — no SharedFlow, no coroutine dispatch.
+        // This eliminates 50-70% frame loss caused by SharedFlow collector latency + GC stalls.
+        webRtcManager.onVideoFrame = { monitorIndex, data ->
+            handleVideoFrame(monitorIndex, data)
         }
 
-        // When screen goes static after small changes, the last P-frame may be
-        // delayed by SCTP buffering (small frames don't flush immediately).
-        // Send mouse nudges SEPARATELY (with delay between) to force 2 distinct
-        // DXGI captures. First nudge moves cursor → DXGI captures change → flushes
-        // any buffered small frame + sends nudge frame. Second nudge moves back.
-        nudgeJob = scope.launch(Dispatchers.Default) {
-            while (true) {
-                delay(16) // Poll every ~1 frame interval instead of 2ms busy-poll
-                val lastNano = lastFrameNanoTime
-                if (lastNano == 0L || nudgedForCurrentIdle) continue
-                val elapsedMs = (System.nanoTime() - lastNano) / 1_000_000
-                if (elapsedMs > 33) { // ~2 frames at 60fps — reasonable idle threshold
-                    nudgedForCurrentIdle = true
-                    webRtcManager.sendInput(InputProtocol.encodeMouseMove(1.toShort(), 0.toShort()))
-                    delay(8) // Minimal delay for server to capture
-                    webRtcManager.sendInput(InputProtocol.encodeMouseMove((-1).toShort(), 0.toShort()))
+    }
+
+    /**
+     * Called directly from WebRTC DataChannel thread. Must be fast and non-blocking.
+     * Parsing and decoder submission happen inline — no coroutine dispatch overhead.
+     */
+    private fun handleVideoFrame(monitorIndex: Int, data: ByteArray) {
+        val parser = parsers[monitorIndex] ?: return
+
+        // Fast path: skip full parsing for non-active monitors (only cache codec config)
+        val isActive = monitorIndex == _activeMonitor.value
+        if (!isActive) {
+            if (data.isNotEmpty() && data[0] == 0x02.toByte()) {
+                val frame = parser.parse(data)
+                if (frame?.type == VideoFrameParser.FrameType.CODEC_CONFIG) {
+                    codecConfigs[monitorIndex] = frame.data
                 }
             }
+            return
+        }
+
+        val frame = parser.parse(data) ?: return
+
+        if (frame.type == VideoFrameParser.FrameType.CODEC_CONFIG) {
+            codecConfigs[monitorIndex] = frame.data
+        }
+
+        activeDecoder?.feedParsedFrame(frame)
+        if (frame.type != VideoFrameParser.FrameType.CODEC_CONFIG) {
+            val now = System.nanoTime()
+            val gapMs = if (lastFrameNanoTime > 0) (now - lastFrameNanoTime) / 1_000_000 else 0
+            lastFrameNanoTime = now
+            frameCount++
+            // Log frames with large gaps — these are the ones that feel "stuck"
+            if (gapMs > 100) {
+                val decoder = activeDecoder
+                val rendered = decoder?.framesRendered ?: 0
+                val dropped = decoder?.framesDroppedNoBuffer ?: 0
+                Log.w(TAG, "Frame gap: ${gapMs}ms (rendered=$rendered, dropped=$dropped, size=${frame.data.size})")
+            }
+            logFpsIfNeeded()
+        }
+    }
+
+    // Client-side nudge loop REMOVED.
+    // Server handles idle→active transition via PerMonitorCapture cursor nudge.
+    // Client nudge was conflicting: sending mouse moves kept InputForceFrames > 0,
+    // which overrode server idle detection → server-side cursor nudge never fired.
+
+    /** Log actual FPS every 3 seconds + warn on drops. Helps diagnose intermittent FPS issues. */
+    private fun logFpsIfNeeded() {
+        val now = System.nanoTime()
+        if (lastFpsLogTime == 0L) {
+            lastFpsLogTime = now
+            lastFpsLogCount = frameCount
+            return
+        }
+        val elapsedMs = (now - lastFpsLogTime) / 1_000_000
+        if (elapsedMs >= 3000) {
+            val frames = frameCount - lastFpsLogCount
+            val fps = frames * 1000.0 / elapsedMs
+            val decoder = activeDecoder
+            val pipelineInfo = if (decoder != null) {
+                " in=${decoder.framesSubmitted} dec=${decoder.framesDecoded} out=${decoder.framesRendered} skip=${decoder.framesSkipped} drop=${decoder.framesDroppedNoBuffer}"
+            } else ""
+            val delta = if (decoder != null) {
+                val inOut = decoder.framesSubmitted - decoder.framesRendered
+                " held=$inOut"
+            } else ""
+            if (fps < targetFps * 0.7) {
+                Log.w(TAG, "FPS DROP: %.1f fps (target=$targetFps)$pipelineInfo$delta".format(fps))
+            } else {
+                Log.d(TAG, "FPS: %.1f$pipelineInfo$delta".format(fps))
+            }
+            lastFpsLogTime = now
+            lastFpsLogCount = frameCount
         }
     }
 
@@ -149,13 +193,28 @@ class VideoDecoderManager @Inject constructor(
         }
     }
 
-    fun releaseAll() {
-        frameJob?.cancel()
-        frameJob = null
-        nudgeJob?.cancel()
-        nudgeJob = null
+    /** Pause: release decoder + stop frame collection, but KEEP codec configs for fast resume */
+    fun pauseForResume() {
+        webRtcManager.onVideoFrame = null
         lastFrameNanoTime = 0
-        nudgedForCurrentIdle = false
+        frameCount = 0
+        lastFpsLogTime = 0
+        lastFpsLogCount = 0
+        activeDecoder?.release()
+        activeDecoder = null
+        activeSurface = null
+        _firstFrameReceived.value = emptySet()
+        // Keep parsers + codecConfigs so resume can re-use cached SPS/PPS
+        Log.d(TAG, "Paused for resume (codec configs preserved: ${codecConfigs.keys})")
+    }
+
+    /** Full release: destroy everything including codec configs */
+    fun releaseAll() {
+        webRtcManager.onVideoFrame = null
+        lastFrameNanoTime = 0
+        frameCount = 0
+        lastFpsLogTime = 0
+        lastFpsLogCount = 0
         activeDecoder?.release()
         activeDecoder = null
         parsers.values.forEach { it.reset() }

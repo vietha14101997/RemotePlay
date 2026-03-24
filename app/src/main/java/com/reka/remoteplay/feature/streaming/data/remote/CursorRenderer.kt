@@ -1,8 +1,8 @@
 package com.reka.remoteplay.feature.streaming.data.remote
 
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.util.Base64
+import androidx.core.graphics.createBitmap
 import android.util.Log
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -118,7 +118,7 @@ class CursorRenderer @Inject constructor() {
             val expectedSize = w * h * 4
             if (rgbaBytes.size != expectedSize) {
                 val actualPixels = rgbaBytes.size / 4
-                val side = Math.sqrt(actualPixels.toDouble()).toInt()
+                val side = kotlin.math.sqrt(actualPixels.toDouble()).toInt()
                 if (side * side * 4 == rgbaBytes.size && side in 1..256) {
                     w = side
                     h = side
@@ -126,7 +126,7 @@ class CursorRenderer @Inject constructor() {
             }
 
             // Create Bitmap from raw RGBA bytes
-            val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            val bitmap = createBitmap(w, h, Bitmap.Config.ARGB_8888)
             val buf = ByteBuffer.wrap(rgbaBytes)
             bitmap.copyPixelsFromBuffer(buf)
 
@@ -147,10 +147,4 @@ class CursorRenderer @Inject constructor() {
         }
     }
 
-    fun reset() {
-        _cursorState.value = CursorState()
-        _cursorImage.value = null
-        cursorImageCache.values.forEach { it.bitmap.recycle() }
-        cursorImageCache.clear()
-    }
 }

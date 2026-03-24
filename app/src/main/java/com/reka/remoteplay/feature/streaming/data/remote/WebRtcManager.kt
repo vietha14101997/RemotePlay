@@ -26,11 +26,9 @@ class WebRtcManager @Inject constructor(
     private val videoPcs = mutableMapOf<Int, PeerConnection>()
     private val videoDcs = mutableMapOf<Int, DataChannel>()
 
-    // Data flows
-    private val _videoFrames = MutableSharedFlow<Pair<Int, ByteArray>>(
-        replay = 0, extraBufferCapacity = 32, onBufferOverflow = BufferOverflow.DROP_OLDEST
-    )
-    val videoFrames: SharedFlow<Pair<Int, ByteArray>> = _videoFrames.asSharedFlow()
+    // Video frame callback — called directly from WebRTC thread to avoid SharedFlow overhead.
+    // SharedFlow + Dispatchers.Default caused 50-70% frame loss due to collector latency + GC stalls.
+    var onVideoFrame: ((monitorIndex: Int, data: ByteArray) -> Unit)? = null
 
     private val _cursorData = MutableSharedFlow<ByteArray>(
         replay = 0, extraBufferCapacity = 16, onBufferOverflow = BufferOverflow.DROP_OLDEST
@@ -71,7 +69,11 @@ class WebRtcManager @Inject constructor(
             rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
-            audioJitterBufferMaxPackets = 10
+            // Absolute minimum jitter buffer for lowest audio latency.
+            // User reports ~100ms audio lag behind video (audio continues after video shows pause).
+            // 10ms Opus frames × 2 packets = 20ms max buffer.
+            // Combined with libwebrtc internal AudioTrack (~10ms), total ~30ms audio pipeline.
+            audioJitterBufferMaxPackets = 2
             audioJitterBufferFastAccelerate = true
         }
     }
@@ -154,7 +156,7 @@ class WebRtcManager @Inject constructor(
                 if (label.startsWith("h265video")) {
                     videoDcs[monitorIndex] = dc
                     wireDataChannel(dc) { data ->
-                        _videoFrames.tryEmit(monitorIndex to data)
+                        onVideoFrame?.invoke(monitorIndex, data)
                     }
                 }
             }

@@ -1,5 +1,6 @@
 package com.reka.remoteplay.feature.connection.presentation
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -15,8 +16,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import com.reka.remoteplay.ui.theme.*
+
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import com.reka.remoteplay.R
+import com.reka.remoteplay.ui.theme.*
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.reka.remoteplay.core.model.HardwareInfoMessage
@@ -29,14 +33,14 @@ fun ConfigReviewScreen(
     suggestedConfig: SuggestedConfigMessage,
     connectionState: ConnectionState = ConnectionState.ConfiguringSettings,
     isPaused: Boolean = false,
+    savedMonitors: Int = 1,
+    savedResolution: Int = 1080,
+    savedFps: Int = 60,
+    connectionType: String = "Unknown",
     onProceed: (monitors: Int, resolutionHeight: Int, fps: Int) -> Unit,
     onResume: () -> Unit = {},
     onBack: () -> Unit
 ) {
-    var selectedMonitors by remember { mutableIntStateOf(suggestedConfig.monitors.coerceAtMost(3)) }
-    var selectedResolution by remember { mutableIntStateOf(suggestedConfig.resolution.height) }
-    var selectedFps by remember { mutableIntStateOf(suggestedConfig.fps) }
-
     val maxMonitors = serverInfo.monitors.size
     val maxNativeHeight = suggestedConfig.maxNativeHeight
     val availableResolutions = buildList {
@@ -44,6 +48,39 @@ fun ConfigReviewScreen(
         add(1080)
         if (maxNativeHeight >= 1440) add(1440)
         if (maxNativeHeight >= 2160) add(2160)
+    }
+
+    // Use saved settings as defaults, clamped to server capabilities.
+    // Key on saved values so remember re-evaluates when DataStore loads.
+    var selectedMonitors by remember(savedMonitors, maxMonitors) {
+        mutableIntStateOf(savedMonitors.coerceIn(1, maxMonitors))
+    }
+    var selectedResolution by remember(savedResolution) {
+        val clamped = if (savedResolution in availableResolutions) savedResolution else 1080
+        mutableIntStateOf(clamped)
+    }
+    var selectedFps by remember(savedFps) {
+        mutableIntStateOf(savedFps.coerceIn(30, 60))
+    }
+
+    val settingsEnabled = connectionState is ConnectionState.ConfiguringSettings && !isPaused
+
+    // Double-press back to disconnect
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var backPressedOnce by remember { mutableStateOf(false) }
+    BackHandler {
+        if (backPressedOnce) {
+            onBack()
+        } else {
+            backPressedOnce = true
+            android.widget.Toast.makeText(context, context.getString(R.string.press_back_to_disconnect), android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+    LaunchedEffect(backPressedOnce) {
+        if (backPressedOnce) {
+            kotlinx.coroutines.delay(2000)
+            backPressedOnce = false
+        }
     }
 
     Box(
@@ -64,74 +101,42 @@ fun ConfigReviewScreen(
             // Header
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = AppTextTertiary)
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back), tint = AppTextTertiary)
                 }
-                Text("Stream Configuration", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                Text(stringResource(R.string.stream_configuration), fontSize = 20.sp, fontWeight = FontWeight.Bold, color = AppTextPrimary)
             }
 
             Spacer(modifier = Modifier.height(16.dp))
 
             // Server Info Card
             InfoCard(
-                title = "Server",
+                title = stringResource(R.string.server),
                 icon = Icons.Default.Computer,
                 items = listOf(
-                    "Name" to serverInfo.device.name,
-                    "GPU" to "${serverInfo.device.gpu} (${serverInfo.device.gpuVramGB}GB)",
-                    "CPU" to serverInfo.device.processor,
-                    "Encoder" to "${serverInfo.encoder.type} (${if (serverInfo.encoder.hwAccel) "Hardware" else "Software"})",
-                    "Monitors" to "${serverInfo.monitors.size} displays"
+                    stringResource(R.string.name_label) to serverInfo.device.name,
+                    stringResource(R.string.gpu_label) to stringResource(R.string.gpu_format, serverInfo.device.gpu, serverInfo.device.gpuVramGB),
+                    stringResource(R.string.cpu_label) to serverInfo.device.processor,
+                    stringResource(R.string.encoder_label) to stringResource(R.string.encoder_format, serverInfo.encoder.type, if (serverInfo.encoder.hwAccel) stringResource(R.string.hardware) else stringResource(R.string.software)),
+                    stringResource(R.string.monitors_label) to stringResource(R.string.displays_format, serverInfo.monitors.size)
                 )
             )
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Network Info Card
+            // Network Info Card — use client-detected connectionType
             val networkInfo = suggestedConfig.networkInfo
             InfoCard(
-                title = "Network",
+                title = stringResource(R.string.network),
                 icon = Icons.Default.NetworkCheck,
                 items = buildList {
-                    add("Connection" to suggestedConfig.connectionType)
+                    add(stringResource(R.string.connection_label) to connectionType)
                     if (networkInfo != null) {
-                        add("Ping" to "${String.format(java.util.Locale.US, "%.1f", networkInfo.pingMs)} ms")
-                        add("Bandwidth" to "${String.format(java.util.Locale.US, "%.1f", networkInfo.bandwidthMbps)} Mbps")
-                        add("Jitter" to "${String.format(java.util.Locale.US, "%.1f", networkInfo.jitterMs)} ms")
-                        if (networkInfo.isUsbMode) {
-                            add("USB" to "${networkInfo.usbVersion ?: "Unknown"} (${String.format(java.util.Locale.US, "%.0f", networkInfo.usbEstimatedBandwidthMbps)} Mbps)")
-                        }
+                        add(stringResource(R.string.ping_label) to stringResource(R.string.ping_format, networkInfo.pingMs))
+                        add(stringResource(R.string.bandwidth_label) to stringResource(R.string.bandwidth_format, networkInfo.bandwidthMbps))
+                        add(stringResource(R.string.jitter_label) to stringResource(R.string.jitter_format, networkInfo.jitterMs))
                     }
                 }
             )
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // Codec chip
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center
-            ) {
-                SuggestionChip(
-                    onClick = {},
-                    label = {
-                        Text(
-                            "Codec: ${suggestedConfig.selectedCodec}",
-                            fontWeight = FontWeight.SemiBold
-                        )
-                    },
-                    icon = {
-                        Icon(
-                            Icons.Default.VideoSettings,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    },
-                    colors = SuggestionChipDefaults.suggestionChipColors(
-                        containerColor = if (suggestedConfig.selectedCodec == "H265") AppGreenBg else AppSurface,
-                        labelColor = if (suggestedConfig.selectedCodec == "H265") AppGreenLight else AppTextSecondary
-                    )
-                )
-            }
 
             Spacer(modifier = Modifier.height(20.dp))
 
@@ -142,17 +147,18 @@ fun ConfigReviewScreen(
                 colors = CardDefaults.cardColors(containerColor = AppSurface)
             ) {
                 Column(modifier = Modifier.padding(20.dp)) {
-                    Text("Stream Settings", fontWeight = FontWeight.SemiBold, color = Color.White, fontSize = 16.sp)
+                    Text(stringResource(R.string.stream_settings), fontWeight = FontWeight.SemiBold, color = AppTextPrimary, fontSize = 16.sp)
                     Spacer(modifier = Modifier.height(16.dp))
 
                     // Monitor count
-                    Text("Monitors", color = AppTextTertiary, fontSize = 13.sp)
+                    Text(stringResource(R.string.monitors_label), color = AppTextTertiary, fontSize = 13.sp)
                     Spacer(modifier = Modifier.height(4.dp))
                     SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
                         (1..maxMonitors.coerceAtMost(4)).forEach { count ->
                             SegmentedButton(
                                 selected = selectedMonitors == count,
-                                onClick = { selectedMonitors = count },
+                                onClick = { if (settingsEnabled) selectedMonitors = count },
+                                enabled = settingsEnabled,
                                 shape = SegmentedButtonDefaults.itemShape(
                                     index = count - 1,
                                     count = maxMonitors.coerceAtMost(4)
@@ -172,13 +178,14 @@ fun ConfigReviewScreen(
                     Spacer(modifier = Modifier.height(16.dp))
 
                     // Resolution
-                    Text("Resolution", color = AppTextTertiary, fontSize = 13.sp)
+                    Text(stringResource(R.string.resolution), color = AppTextTertiary, fontSize = 13.sp)
                     Spacer(modifier = Modifier.height(4.dp))
                     SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
                         availableResolutions.forEachIndexed { index, res ->
                             SegmentedButton(
                                 selected = selectedResolution == res,
-                                onClick = { selectedResolution = res },
+                                onClick = { if (settingsEnabled) selectedResolution = res },
+                                enabled = settingsEnabled,
                                 shape = SegmentedButtonDefaults.itemShape(
                                     index = index,
                                     count = availableResolutions.size
@@ -190,7 +197,7 @@ fun ConfigReviewScreen(
                                     inactiveContentColor = AppTextTertiary
                                 )
                             ) {
-                                Text("${res}p")
+                                Text(stringResource(R.string.resolution_format, res))
                             }
                         }
                     }
@@ -198,13 +205,14 @@ fun ConfigReviewScreen(
                     Spacer(modifier = Modifier.height(16.dp))
 
                     // FPS
-                    Text("Frame Rate", color = AppTextTertiary, fontSize = 13.sp)
+                    Text(stringResource(R.string.frame_rate), color = AppTextTertiary, fontSize = 13.sp)
                     Spacer(modifier = Modifier.height(4.dp))
                     SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
                         listOf(30, 60).forEachIndexed { index, fps ->
                             SegmentedButton(
                                 selected = selectedFps == fps,
-                                onClick = { selectedFps = fps },
+                                onClick = { if (settingsEnabled) selectedFps = fps },
+                                enabled = settingsEnabled,
                                 shape = SegmentedButtonDefaults.itemShape(index = index, count = 2),
                                 colors = SegmentedButtonDefaults.colors(
                                     activeContainerColor = AppAccent.copy(alpha = 0.2f),
@@ -213,7 +221,7 @@ fun ConfigReviewScreen(
                                     inactiveContentColor = AppTextTertiary
                                 )
                             ) {
-                                Text("${fps} FPS")
+                                Text(stringResource(R.string.fps_format, fps))
                             }
                         }
                     }
@@ -222,7 +230,7 @@ fun ConfigReviewScreen(
 
                     // Bitrate info (read-only)
                     Text(
-                        "Bitrate: ${suggestedConfig.bitrateKbps / 1000} Mbps (auto)",
+                        stringResource(R.string.bitrate_format, suggestedConfig.bitrateKbps / 1000),
                         color = AppTextQuaternary,
                         fontSize = 12.sp
                     )
@@ -231,17 +239,17 @@ fun ConfigReviewScreen(
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            // Start / Resume button with state progression
+            // Start / Resume button
             val isInProgress = connectionState !is ConnectionState.ConfiguringSettings && !isPaused
             val buttonText = when {
-                isPaused -> "Resume"
-                connectionState is ConnectionState.ConfiguringSettings -> "Start"
-                connectionState is ConnectionState.SendingDisplayConfig -> "Setting up..."
-                connectionState is ConnectionState.AwaitingSetupComplete -> "Setting up..."
-                connectionState is ConnectionState.IceNegotiating -> "Connecting..."
-                connectionState is ConnectionState.ReadyToStream -> "Starting..."
-                connectionState is ConnectionState.StartingStream -> "Starting..."
-                else -> "Start"
+                isPaused -> stringResource(R.string.resume)
+                connectionState is ConnectionState.ConfiguringSettings -> stringResource(R.string.start)
+                connectionState is ConnectionState.SendingDisplayConfig -> stringResource(R.string.setting_up)
+                connectionState is ConnectionState.AwaitingSetupComplete -> stringResource(R.string.setting_up)
+                connectionState is ConnectionState.IceNegotiating -> stringResource(R.string.connecting)
+                connectionState is ConnectionState.ReadyToStream -> stringResource(R.string.starting)
+                connectionState is ConnectionState.StartingStream -> stringResource(R.string.starting)
+                else -> stringResource(R.string.start)
             }
             val buttonColor = when {
                 isPaused -> AppBlue
@@ -270,7 +278,7 @@ fun ConfigReviewScreen(
                 if (isInProgress) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(20.dp),
-                        color = Color.White,
+                        color = AppTextPrimary,
                         strokeWidth = 2.dp
                     )
                     Spacer(modifier = Modifier.width(8.dp))
@@ -281,7 +289,7 @@ fun ConfigReviewScreen(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                 }
-                Text(buttonText, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = Color.White)
+                Text(buttonText, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = AppTextPrimary)
             }
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -304,7 +312,7 @@ private fun InfoCard(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(icon, contentDescription = null, tint = AppAccent, modifier = Modifier.size(20.dp))
                 Spacer(modifier = Modifier.width(8.dp))
-                Text(title, fontWeight = FontWeight.SemiBold, color = Color.White, fontSize = 15.sp)
+                Text(title, fontWeight = FontWeight.SemiBold, color = AppTextPrimary, fontSize = 15.sp)
             }
             Spacer(modifier = Modifier.height(12.dp))
             items.forEach { (label, value) ->

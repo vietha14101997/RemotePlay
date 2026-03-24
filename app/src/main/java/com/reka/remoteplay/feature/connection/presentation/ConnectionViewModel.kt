@@ -1,6 +1,9 @@
 package com.reka.remoteplay.feature.connection.presentation
 
 import android.app.Application
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.reka.remoteplay.core.model.DisplayConfigMessage
@@ -12,9 +15,12 @@ import com.reka.remoteplay.core.network.WsConnectionState
 import com.reka.remoteplay.feature.connection.data.local.ConnectionPreferences
 import com.reka.remoteplay.feature.connection.data.local.SavedServer
 import com.reka.remoteplay.feature.connection.data.remote.PhaseOneHandler
+import com.reka.remoteplay.feature.connection.data.remote.ServerDiscoveryService
 import com.reka.remoteplay.feature.connection.domain.model.ConnectionState
 import com.reka.remoteplay.feature.connection.domain.repository.ConnectionStateRepository
+import com.reka.remoteplay.feature.streaming.data.remote.AudioPlayer
 import com.reka.remoteplay.feature.streaming.data.remote.PhaseTwoHandler
+import com.reka.remoteplay.feature.streaming.data.remote.VideoDecoderManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -27,13 +33,19 @@ class ConnectionViewModel @Inject constructor(
     private val connectionStateRepo: ConnectionStateRepository,
     private val preferences: ConnectionPreferences,
     private val phaseOneHandler: PhaseOneHandler,
-    private val phaseTwoHandler: PhaseTwoHandler
+    private val phaseTwoHandler: PhaseTwoHandler,
+    private val serverDiscoveryService: ServerDiscoveryService,
+    private val videoDecoderManager: VideoDecoderManager,
+    private val audioPlayer: AudioPlayer
 ) : AndroidViewModel(application) {
 
     val connectionState = connectionStateRepo.state
     val savedServers = preferences.savedServers
-    val usbMode = preferences.usbMode
-        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    // Server discovery (manual trigger)
+    val discoveredServers = serverDiscoveryService.servers
+    private val _isScanning = MutableStateFlow(false)
+    val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
 
     // Phase 1 data
     val serverInfo = phaseOneHandler.serverInfo
@@ -42,11 +54,16 @@ class ConnectionViewModel @Inject constructor(
     // Phase 2 data
     val monitors = phaseTwoHandler.monitors
 
-    private val _hostInput = MutableStateFlow("")
-    val hostInput: StateFlow<String> = _hostInput.asStateFlow()
+    // Saved stream settings
+    val savedMonitors = preferences.streamMonitors
+        .stateIn(viewModelScope, SharingStarted.Eagerly, 1)
+    val savedResolution = preferences.streamResolution
+        .stateIn(viewModelScope, SharingStarted.Eagerly, 1080)
+    val savedFps = preferences.streamFps
+        .stateIn(viewModelScope, SharingStarted.Eagerly, 60)
 
+    private val _hostInput = MutableStateFlow("")
     private val _portInput = MutableStateFlow("8288")
-    val portInput: StateFlow<String> = _portInput.asStateFlow()
 
     init {
         viewModelScope.launch {
@@ -85,14 +102,28 @@ class ConnectionViewModel @Inject constructor(
         }
     }
 
-    fun onHostChanged(host: String) { _hostInput.value = host }
-    fun onPortChanged(port: String) { _portInput.value = port }
+    fun startScan() {
+        serverDiscoveryService.start(viewModelScope)
+        _isScanning.value = true
+    }
+
+    fun stopScan() {
+        serverDiscoveryService.stop()
+        _isScanning.value = false
+    }
+
+    fun connectToDiscovered(server: ServerDiscoveryService.DiscoveredServer) {
+        _hostInput.value = server.ip
+        _portInput.value = server.port.toString()
+        connect() // connect() calls stop() internally
+    }
 
     fun connect() {
         val host = _hostInput.value.trim()
         val port = _portInput.value.toIntOrNull() ?: 8288
         if (host.isEmpty()) return
 
+        stopScan()
         phaseOneHandler.reset()
         phaseTwoHandler.reset()
         connectionStateRepo.tryTransition(ConnectionState.Connecting)
@@ -104,8 +135,7 @@ class ConnectionViewModel @Inject constructor(
         val dm = getApplication<Application>().resources.displayMetrics
         phaseOneHandler.startListening(viewModelScope, dm)
 
-        val isUsb = usbMode.value
-        webSocketClient.connect(host, port, isUsb = isUsb)
+        webSocketClient.connect(host, port, isUsb = false)
     }
 
     fun connectToServer(server: SavedServer) {
@@ -115,15 +145,21 @@ class ConnectionViewModel @Inject constructor(
     }
 
     fun disconnect() {
+        audioPlayer.stop()
+        videoDecoderManager.releaseAll()
         webSocketClient.disconnect()
         phaseOneHandler.reset()
         phaseTwoHandler.reset()
         connectionStateRepo.reset()
+        stopScan()
     }
 
     fun proceed(monitors: Int, resolutionHeight: Int, fps: Int) {
         val config = suggestedConfig.value ?: return
-        val isUsb = usbMode.value
+
+        viewModelScope.launch {
+            preferences.saveStreamSettings(monitors, resolutionHeight, fps)
+        }
 
         val resWidth = when (resolutionHeight) {
             720 -> 1280
@@ -139,7 +175,7 @@ class ConnectionViewModel @Inject constructor(
             bitrateKbps = config.bitrateKbps,
             fps = fps,
             monitorType = "standard",
-            isUsbMode = isUsb
+            isUsbMode = false
         )
         webSocketClient.sendText(MessageParser.serialize(displayConfig))
         phaseTwoHandler.setConfiguredFps(fps)
@@ -148,8 +184,20 @@ class ConnectionViewModel @Inject constructor(
         phaseTwoHandler.startListening(viewModelScope)
     }
 
-    fun setUsbMode(enabled: Boolean) {
-        viewModelScope.launch { preferences.setUsbMode(enabled) }
+    fun getConnectionType(): String {
+        return try {
+            val cm = getApplication<Application>().getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val network = cm.activeNetwork ?: return "Unknown"
+            val caps = cm.getNetworkCapabilities(network) ?: return "Unknown"
+            when {
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "Wi-Fi"
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "Ethernet"
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "Cellular"
+                else -> "Unknown"
+            }
+        } catch (_: Exception) {
+            "Unknown"
+        }
     }
 
     fun removeServer(server: SavedServer) {
@@ -159,5 +207,10 @@ class ConnectionViewModel @Inject constructor(
     fun resumeStreaming() {
         webSocketClient.sendText(MessageParser.serialize(ResumeStreamingMessage()))
         connectionStateRepo.forceTransition(ConnectionState.Streaming)
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        serverDiscoveryService.stop()
     }
 }
