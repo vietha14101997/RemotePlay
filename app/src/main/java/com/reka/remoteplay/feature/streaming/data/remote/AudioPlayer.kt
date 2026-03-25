@@ -23,8 +23,9 @@ import javax.inject.Singleton
 /**
  * Low-latency audio playback for remote desktop streaming via DataChannel PCM.
  *
- * Uses USAGE_GAME + LOW_LATENCY for minimum latency.
- * Volume controlled by media volume slider (works with Bluetooth A2DP).
+ * Uses VOICE_COMMUNICATION + LOW_LATENCY for minimum latency.
+ * Volume controlled by call volume slider.
+ * BT SCO disabled to force A2DP (stereo full quality) for Bluetooth headphones.
  */
 @Singleton
 class AudioPlayer @Inject constructor(
@@ -43,7 +44,9 @@ class AudioPlayer @Inject constructor(
         private const val SAMPLE_RATE = 48000
         private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_OUT_STEREO
         private const val ENCODING = AudioFormat.ENCODING_PCM_16BIT
-        private const val VOLUME_BOOST = 2.5f // Amplify PCM samples before writing
+        // Software amplification disabled — system media volume controls output level.
+        // Previous 2.5x boost clipped PCM samples to max, making volume buttons ineffective.
+        private const val VOLUME_BOOST = 1.0f
     }
 
     fun startDataChannelAudio(scope: CoroutineScope) {
@@ -53,8 +56,8 @@ class AudioPlayer @Inject constructor(
         audioTrack = AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_GAME)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                     .build()
             )
             .setAudioFormat(
@@ -69,15 +72,21 @@ class AudioPlayer @Inject constructor(
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
 
-        // USAGE_GAME routes to speaker by default, BT A2DP when headphones connected.
-        // No need for MODE_IN_COMMUNICATION or speakerphone force.
         val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+        @Suppress("DEPRECATION")
+        audioManager.isSpeakerphoneOn = true
+        // Prevent BT SCO (mono 8kHz) — force BT headphones to use A2DP (stereo full quality)
+        @Suppress("DEPRECATION")
+        audioManager.isBluetoothScoOn = false
+        @Suppress("DEPRECATION")
+        audioManager.stopBluetoothSco()
 
         // Restore last stream volume (if saved from previous session)
         val lastVol = runBlocking { preferences.streamVolume.first() }
         if (lastVol >= 0) {
-            val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, lastVol.coerceAtMost(max), 0)
+            val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)
+            audioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL, lastVol.coerceAtMost(max), 0)
             Log.d(TAG, "Restored stream volume to $lastVol")
         }
 
@@ -87,7 +96,7 @@ class AudioPlayer @Inject constructor(
         // Watch volume changes and persist immediately
         volumeObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
             override fun onChange(selfChange: Boolean) {
-                val vol = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+                val vol = audioManager.getStreamVolume(AudioManager.STREAM_VOICE_CALL)
                 audioScope?.launch {
                     try { preferences.saveStreamVolume(vol) } catch (_: Exception) {}
                 }
@@ -97,7 +106,7 @@ class AudioPlayer @Inject constructor(
             Settings.System.CONTENT_URI, true, volumeObserver!!
         )
 
-        Log.d(TAG, "AudioTrack started (GAME, LOW_LATENCY, boost=$VOLUME_BOOST)")
+        Log.d(TAG, "AudioTrack started (VOICE_COMM, LOW_LATENCY, sco=off, boost=$VOLUME_BOOST)")
 
         dcAudioJob = scope.launch(kotlinx.coroutines.Dispatchers.IO) {
             var count = 0L
@@ -150,7 +159,7 @@ class AudioPlayer @Inject constructor(
         val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
         // Final save of current volume (safety net — observer already saved on each change)
-        val currentVol = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+        val currentVol = audioManager.getStreamVolume(AudioManager.STREAM_VOICE_CALL)
         audioScope?.launch {
             try { preferences.saveStreamVolume(currentVol) } catch (_: Exception) {}
         }
@@ -161,6 +170,10 @@ class AudioPlayer @Inject constructor(
             audioTrack?.release()
         } catch (_: Exception) {}
         audioTrack = null
+
+        @Suppress("DEPRECATION")
+        audioManager.isSpeakerphoneOn = false
+        audioManager.mode = AudioManager.MODE_NORMAL
         audioScope = null
         Log.d(TAG, "AudioTrack stopped")
     }

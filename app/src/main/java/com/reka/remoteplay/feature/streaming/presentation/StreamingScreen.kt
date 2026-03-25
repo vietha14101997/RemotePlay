@@ -128,7 +128,7 @@ fun StreamingScreen(
     DisposableEffect(Unit) {
         val activity = context as? Activity ?: return@DisposableEffect onDispose {}
         activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-        activity.volumeControlStream = android.media.AudioManager.STREAM_MUSIC
+        activity.volumeControlStream = android.media.AudioManager.STREAM_VOICE_CALL
         activity.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         val window = activity.window

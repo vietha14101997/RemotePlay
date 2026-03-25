@@ -58,8 +58,9 @@ fun ConfigReviewScreen(
 
     // Use saved settings as defaults, clamped to server capabilities.
     // Key on saved values so remember re-evaluates when DataStore loads.
-    var selectedMonitors by remember(savedMonitors, maxMonitors) {
-        mutableIntStateOf(savedMonitors.coerceIn(1, maxMonitors))
+    val maxSelectableMonitors = if (maxMonitors <= 3) 3 else maxMonitors
+    var selectedMonitors by remember(savedMonitors, maxSelectableMonitors) {
+        mutableIntStateOf(savedMonitors.coerceIn(1, maxSelectableMonitors))
     }
     var selectedResolution by remember(savedResolution) {
         val clamped = if (savedResolution in availableResolutions) savedResolution else 1080
@@ -195,26 +196,55 @@ fun ConfigReviewScreen(
 
                     if (!bindMobileScreen) {
                     // Monitor count
+                    // ≤3 monitors: show 1..n segmented buttons
+                    // >3 monitors: show all as pill chips (same style as FPS selector)
                     Text(stringResource(R.string.monitors_label), color = AppTextTertiary, fontSize = 13.sp)
                     Spacer(modifier = Modifier.height(4.dp))
-                    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                        (1..maxMonitors.coerceAtMost(4)).forEach { count ->
-                            SegmentedButton(
-                                selected = selectedMonitors == count,
-                                onClick = { if (settingsEnabled) selectedMonitors = count },
-                                enabled = settingsEnabled,
-                                shape = SegmentedButtonDefaults.itemShape(
-                                    index = count - 1,
-                                    count = maxMonitors.coerceAtMost(4)
-                                ),
-                                colors = SegmentedButtonDefaults.colors(
-                                    activeContainerColor = AppAccent.copy(alpha = 0.2f),
-                                    activeContentColor = AppAccent,
-                                    inactiveContainerColor = Color.Transparent,
-                                    inactiveContentColor = AppTextTertiary
-                                )
-                            ) {
-                                Text("$count")
+                    if (maxSelectableMonitors <= 3) {
+                        SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                            (1..3).forEach { count ->
+                                SegmentedButton(
+                                    selected = selectedMonitors == count,
+                                    onClick = { if (settingsEnabled) selectedMonitors = count },
+                                    enabled = settingsEnabled,
+                                    shape = SegmentedButtonDefaults.itemShape(
+                                        index = count - 1,
+                                        count = 3
+                                    ),
+                                    colors = SegmentedButtonDefaults.colors(
+                                        activeContainerColor = AppAccent.copy(alpha = 0.2f),
+                                        activeContentColor = AppAccent,
+                                        inactiveContainerColor = Color.Transparent,
+                                        inactiveContentColor = AppTextTertiary
+                                    )
+                                ) {
+                                    Text("$count")
+                                }
+                            }
+                        }
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            (1..maxSelectableMonitors).forEach { count ->
+                                val isSelected = selectedMonitors == count
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = if (isSelected) AppAccent.copy(alpha = 0.2f) else Color.Transparent,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clickable(enabled = settingsEnabled) { selectedMonitors = count }
+                                ) {
+                                    Text(
+                                        text = "$count",
+                                        color = if (isSelected) AppAccent else AppTextTertiary,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                        fontSize = 14.sp,
+                                        modifier = Modifier.padding(vertical = 10.dp),
+                                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                    )
+                                }
                             }
                         }
                     }
