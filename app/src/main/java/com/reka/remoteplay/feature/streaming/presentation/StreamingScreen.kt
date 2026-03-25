@@ -570,7 +570,7 @@ private fun TouchpadLayer(
                         val scrollY = (accumY / scrollThreshold).toInt()
                         val scrollX = (accumX / scrollThreshold).toInt()
                         if (scrollY != 0) {
-                            onSendMouseWheel((-scrollY * 40).toShort(), 0)
+                            onSendMouseWheel((scrollY * 40).toShort(), 0)
                             accumY -= scrollY * scrollThreshold
                         }
                         if (scrollX != 0) {
