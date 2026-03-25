@@ -22,7 +22,8 @@ import kotlin.concurrent.withLock
  */
 class VideoDecoder(
     private val monitorIndex: Int,
-    private val codec: String = "H265"
+    private val codec: String = "H265",
+    targetFps: Int = 60
 ) {
     private var mediaCodec: MediaCodec? = null
     private var configured = false
@@ -55,6 +56,13 @@ class VideoDecoder(
     /** Frames dropped because no input buffer was available. */
     @Volatile var framesDroppedNoBuffer = 0L
         private set
+
+    // Adaptive frame pacing: smooth out network jitter without accumulating latency.
+    // renderTime = max(lastRenderNs + interval, now).coerceAtMost(now + interval)
+    // Written only on callbackHandler thread (onOutputBufferAvailable) — flush() also
+    // runs on callbackHandler (from onError), so no concurrent writer race.
+    @Volatile private var lastRenderNs = 0L
+    private val frameIntervalNs = 1_000_000_000L / targetFps
 
     var onFirstFrame: (() -> Unit)? = null
 
@@ -161,7 +169,15 @@ class VideoDecoder(
                     }
                     framesDecoded++
                     try {
-                        codec.releaseOutputBuffer(index, System.nanoTime())
+                        // Adaptive pacing: smooth jitter, cap at 1-frame added latency.
+                        // - max(last + interval, now): ensures minimum spacing between frames
+                        // - coerceAtMost(now + interval): prevents latency accumulation in bursts
+                        val now = System.nanoTime()
+                        val paced = maxOf(lastRenderNs + frameIntervalNs, now)
+                        val renderTime = paced.coerceAtMost(now + frameIntervalNs)
+                        lastRenderNs = renderTime
+
+                        codec.releaseOutputBuffer(index, renderTime)
                         framesRendered++
                         if (!firstFrameRendered) {
                             firstFrameRendered = true
@@ -245,6 +261,7 @@ class VideoDecoder(
             mediaCodec?.flush()
             mediaCodec?.start()
             decoderBootstrapped = false
+            lastRenderNs = 0
             Log.i(TAG, "[$monitorIndex] Flushed, waiting for IDR")
         } catch (e: Exception) {
             Log.e(TAG, "[$monitorIndex] Flush error: ${e.message}")
@@ -260,6 +277,7 @@ class VideoDecoder(
         configured = false
         decoderBootstrapped = false
         firstFrameRendered = false
+        lastRenderNs = 0
         codecConfigData = null
         availableInputBuffers.clear()
         callbackThread?.quitSafely()

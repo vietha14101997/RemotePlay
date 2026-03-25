@@ -74,7 +74,7 @@ class VideoDecoderManager @Inject constructor(
         val monitorIndex = _activeMonitor.value
 
         activeDecoder?.release()
-        val decoder = VideoDecoder(monitorIndex, codecString)
+        val decoder = VideoDecoder(monitorIndex, codecString, targetFps)
         decoder.onFirstFrame = {
             _firstFrameReceived.value = _firstFrameReceived.value + monitorIndex
             Log.i(TAG, "★ Monitor $monitorIndex FIRST FRAME RENDERED ★")
@@ -135,8 +135,9 @@ class VideoDecoderManager @Inject constructor(
             val gapMs = if (lastFrameNanoTime > 0) (now - lastFrameNanoTime) / 1_000_000 else 0
             lastFrameNanoTime = now
             frameCount++
-            // Log frames with large gaps — these are the ones that feel "stuck"
-            if (gapMs > 100) {
+            // Log frames with large gaps (>3x frame interval) — these are the ones that feel "stuck"
+            val gapThresholdMs = 3000L / targetFps  // 50ms@60fps, 100ms@30fps, 25ms@120fps
+            if (gapMs > gapThresholdMs) {
                 val decoder = activeDecoder
                 val rendered = decoder?.framesRendered ?: 0
                 val dropped = decoder?.framesDroppedNoBuffer ?: 0

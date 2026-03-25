@@ -95,7 +95,17 @@ class WebRtcManager @Inject constructor(
             }
 
             override fun onDataChannel(dc: DataChannel) {
-                Log.d(TAG, "Main PC onDataChannel: ${dc.label()}")
+                val label = dc.label()
+                Log.d(TAG, "Main PC onDataChannel: $label")
+                // Single-monitor mode: server disables per-track PCs and sends video
+                // on main PC DataChannel instead of a dedicated video PC.
+                if (label.startsWith("h265video") || label.startsWith("h264video")) {
+                    val monitorIndex = label.substringAfterLast("-").toIntOrNull() ?: 0
+                    videoDcs[monitorIndex] = dc
+                    wireDataChannel(dc) { data ->
+                        onVideoFrame?.invoke(monitorIndex, data)
+                    }
+                }
             }
         })
 
@@ -109,6 +119,18 @@ class WebRtcManager @Inject constructor(
         val audioInit = DataChannel.Init().apply { ordered = true }
         val audioDc = mainPc?.createDataChannel("audio", audioInit)
         audioDc?.let { wireDataChannel(it) { data -> _audioData.tryEmit(data) } }
+
+        // Create h265video-0 DC on main PC for single-monitor mode (perTrackPc=false).
+        // Server receives this via ondatachannel and uses it for H265 frame delivery.
+        // In multi-monitor mode (perTrackPc=true), server captures it as fallback DC.
+        val videoInit = DataChannel.Init().apply { ordered = false; maxRetransmits = 0 }
+        val videoDc = mainPc?.createDataChannel("h265video-0", videoInit)
+        videoDc?.let { dc ->
+            videoDcs[0] = dc
+            wireDataChannel(dc) { data ->
+                onVideoFrame?.invoke(0, data)
+            }
+        }
 
         mainPc?.addTransceiver(
             MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO,
