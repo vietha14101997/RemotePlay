@@ -14,6 +14,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
@@ -84,6 +85,10 @@ fun StreamingScreen(
 ) {
     val context = LocalContext.current
     var uiHidden by remember { mutableStateOf(false) }
+    var showFpsPicker by remember { mutableStateOf(false) }
+
+    // Close FPS picker when menu collapses
+    LaunchedEffect(showUI) { if (!showUI) showFpsPicker = false }
 
     // Back handler: show UI if hidden, otherwise double-press to pause
     var backPressedOnce by remember { mutableStateOf(false) }
@@ -352,15 +357,43 @@ fun StreamingScreen(
                                     }
                                 )
 
-                                // Dynamic FPS selector
+                                // FPS label — click to open FPS picker
                                 Spacer(modifier = Modifier.height(4.dp))
-                                availableFpsOptions.forEach { fps ->
-                                    FpsButton(
-                                        fps = fps,
-                                        isActive = streamFps == fps,
-                                        onClick = { onChangeFps(fps) }
-                                    )
-                                }
+                                FpsButton(
+                                    fps = streamFps,
+                                    isActive = showFpsPicker,
+                                    onClick = { showFpsPicker = !showFpsPicker }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // FPS picker bar (top-center, horizontal)
+                AnimatedVisibility(
+                    visible = showFpsPicker,
+                    enter = fadeIn() + expandHorizontally(expandFrom = Alignment.CenterHorizontally),
+                    exit = fadeOut() + shrinkHorizontally(shrinkTowards = Alignment.CenterHorizontally),
+                    modifier = Modifier.align(Alignment.TopCenter).padding(top = 12.dp)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(22.dp),
+                        color = AppSurface.copy(alpha = 0.9f)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            availableFpsOptions.forEach { fps ->
+                                FpsButton(
+                                    fps = fps,
+                                    isActive = streamFps == fps,
+                                    onClick = {
+                                        onChangeFps(fps)
+                                        showFpsPicker = false
+                                    }
+                                )
                             }
                         }
                     }

@@ -32,6 +32,8 @@ class PhaseTwoHandler @Inject constructor(
     private val _availableFpsOptions = MutableStateFlow(listOf(30, 60))
     val availableFpsOptions: StateFlow<List<Int>> = _availableFpsOptions.asStateFlow()
 
+    fun setAvailableFpsOptions(options: List<Int>) { _availableFpsOptions.value = options }
+
     private var messageJob: Job? = null
 
     companion object {

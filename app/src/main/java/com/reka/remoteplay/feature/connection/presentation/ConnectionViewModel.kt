@@ -171,17 +171,17 @@ class ConnectionViewModel @Inject constructor(
         val streamFps: Int
 
         if (bindMobileScreen.value) {
-            // Bind Mobile mode: detect actual device screen specs at connection time
+            // Bind Mobile mode: VDD refresh rate = phone max Hz, stream FPS = user-selected
             val specs = ScreenSpecDetector.detect(getApplication())
             val deviceHz = specs.refreshRate.roundToInt().coerceIn(30, 240)
-            streamFps = deviceHz.coerceAtMost(120)
+            streamFps = fps // User-selected FPS from UI
 
             displayConfig = DisplayConfigMessage(
                 monitors = 1,
                 resolution = ResolutionDto(width = specs.widthPx, height = specs.heightPx),
-                refreshRate = deviceHz,
+                refreshRate = deviceHz, // VDD runs at phone max Hz
                 bitrateKbps = config.bitrateKbps,
-                fps = streamFps,
+                fps = streamFps,        // Encoder at user-selected FPS
                 monitorType = "bind_mobile",
                 isUsbMode = false
             )
@@ -205,6 +205,14 @@ class ConnectionViewModel @Inject constructor(
                 isUsbMode = false
             )
         }
+
+        // Compute and store available FPS options for streaming screen dynamic adjustment
+        val maxHz = if (bindMobileScreen.value) {
+            ScreenSpecDetector.detect(getApplication()).refreshRate
+        } else {
+            config.refreshRate.toFloat()
+        }
+        phaseTwoHandler.setAvailableFpsOptions(com.reka.remoteplay.core.util.buildFpsOptions(maxHz))
 
         webSocketClient.sendText(MessageParser.serialize(displayConfig))
         phaseTwoHandler.setConfiguredFps(streamFps)

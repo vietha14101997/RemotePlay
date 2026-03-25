@@ -2,6 +2,7 @@ package com.reka.remoteplay.feature.connection.presentation
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -26,6 +27,7 @@ import androidx.compose.ui.unit.sp
 import com.reka.remoteplay.core.model.HardwareInfoMessage
 import com.reka.remoteplay.core.model.SuggestedConfigMessage
 import com.reka.remoteplay.core.util.ScreenSpecs
+import com.reka.remoteplay.core.util.buildFpsOptions
 import com.reka.remoteplay.feature.connection.domain.model.ConnectionState
 
 @Composable
@@ -63,8 +65,10 @@ fun ConfigReviewScreen(
         val clamped = if (savedResolution in availableResolutions) savedResolution else 1080
         mutableIntStateOf(clamped)
     }
-    var selectedFps by remember(savedFps) {
-        mutableIntStateOf(savedFps.coerceIn(30, 60))
+    val maxHz = if (bindMobileScreen) deviceScreenSpecs.refreshRate else suggestedConfig.refreshRate.toFloat()
+    val availableFpsOptions = buildFpsOptions(maxHz)
+    var selectedFps by remember(savedFps, availableFpsOptions) {
+        mutableIntStateOf(if (savedFps in availableFpsOptions) savedFps else availableFpsOptions.lastOrNull { it <= 60 } ?: 60)
     }
 
     val settingsEnabled = connectionState is ConnectionState.ConfiguringSettings && !isPaused
@@ -242,31 +246,37 @@ fun ConfigReviewScreen(
                         }
                     }
 
+                    } // end if (!bindMobileScreen) — monitors + resolution hidden
+
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    // FPS
+                    // FPS (always visible — user can choose lower FPS to save GPU)
                     Text(stringResource(R.string.frame_rate), color = AppTextTertiary, fontSize = 13.sp)
                     Spacer(modifier = Modifier.height(4.dp))
-                    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                        listOf(30, 60).forEachIndexed { index, fps ->
-                            SegmentedButton(
-                                selected = selectedFps == fps,
-                                onClick = { if (settingsEnabled) selectedFps = fps },
-                                enabled = settingsEnabled,
-                                shape = SegmentedButtonDefaults.itemShape(index = index, count = 2),
-                                colors = SegmentedButtonDefaults.colors(
-                                    activeContainerColor = AppAccent.copy(alpha = 0.2f),
-                                    activeContentColor = AppAccent,
-                                    inactiveContainerColor = Color.Transparent,
-                                    inactiveContentColor = AppTextTertiary
-                                )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        availableFpsOptions.forEach { fps ->
+                            val isSelected = selectedFps == fps
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (isSelected) AppAccent.copy(alpha = 0.2f) else Color.Transparent,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable(enabled = settingsEnabled) { selectedFps = fps }
                             ) {
-                                Text(stringResource(R.string.fps_format, fps))
+                                Text(
+                                    text = "$fps",
+                                    color = if (isSelected) AppAccent else AppTextTertiary,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                    fontSize = 14.sp,
+                                    modifier = Modifier.padding(vertical = 10.dp),
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                )
                             }
                         }
                     }
-
-                    } // end if (!bindMobileScreen)
 
                     Spacer(modifier = Modifier.height(8.dp))
 
