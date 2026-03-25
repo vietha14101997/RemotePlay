@@ -81,7 +81,8 @@ class StreamingViewModel @Inject constructor(
 
         val monitorList = monitors.value
         val fps = phaseTwoHandler.configuredFps.value
-        videoDecoderManager.initialize(monitorList.size, "H265", fps)
+        val codec = phaseTwoHandler.configuredCodec.value
+        videoDecoderManager.initialize(monitorList.size, codec, fps)
         videoDecoderManager.startFrameCollection()
 
         // Start audio playback (DataChannel path with Opus decode)
@@ -102,6 +103,18 @@ class StreamingViewModel @Inject constructor(
                         .find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
                     if (idx != null && idx != videoDecoderManager.activeMonitor.value) {
                         switchMonitor(idx)
+                    }
+                } else if (text.contains("codec_changed")) {
+                    val actual = "\"actualCodec\"\\s*:\\s*\"(\\w+)\"".toRegex()
+                        .find(text)?.groupValues?.getOrNull(1)
+                    if (actual != null) {
+                        videoDecoderManager.changeCodec(actual)
+                        // After decoder recreated with new codec, request fresh keyframe
+                        // by doing pause+resume on active monitor → server sends codec config + IDR
+                        val activeIdx = videoDecoderManager.activeMonitor.value
+                        webSocketClient.sendText(MessageParser.serialize(PauseMonitorMessage(monitorIndex = activeIdx)))
+                        delay(50)
+                        webSocketClient.sendText(MessageParser.serialize(ResumeMonitorMessage(monitorIndex = activeIdx)))
                     }
                 } else if (text.contains("caret_position")) {
                     val u = "\"u\"\\s*:\\s*([0-9.]+)".toRegex()
@@ -163,14 +176,16 @@ class StreamingViewModel @Inject constructor(
         // Capture current cursor position (normalized 0..1)
         val cursor = cursorRenderer.cursorState.value
 
-        // Resume new monitor FIRST (server starts sending IDR immediately)
-        webSocketClient.sendText(MessageParser.serialize(ResumeMonitorMessage(monitorIndex = index)))
-
-        // Swap decoder on persistent Surface (synchronous)
+        // Swap decoder on persistent Surface (synchronous) FIRST
+        // This ensures decoder is ready before frames arrive.
         videoDecoderManager.switchMonitor(index)
 
-        // Pause old monitor AFTER switch (overlap: new frames arrive while old still sending)
+        // Pause old monitor
         webSocketClient.sendText(MessageParser.serialize(PauseMonitorMessage(monitorIndex = current)))
+
+        // Resume new monitor AFTER decoder is ready → server sends codec_config + IDR
+        // This avoids the race where codec_config arrives before decoder exists.
+        webSocketClient.sendText(MessageParser.serialize(ResumeMonitorMessage(monitorIndex = index)))
 
         // Confine cursor to new monitor + warp immediately (no wait for first frame)
         webRtcManager.sendInput(InputProtocol.encodeFocusMonitor(index))

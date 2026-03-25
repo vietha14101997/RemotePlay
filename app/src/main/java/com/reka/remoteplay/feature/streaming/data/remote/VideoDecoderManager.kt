@@ -46,21 +46,33 @@ class VideoDecoderManager @Inject constructor(
     /** True if codec configs are cached from a previous session (indicates resume scenario) */
     fun hasCachedCodecConfigs(): Boolean = codecConfigs.isNotEmpty()
 
+    private var initialized = false
+
     fun initialize(monitorCount: Int, codec: String = "H265", fps: Int = 60) {
         codecString = codec
         targetFps = fps.coerceIn(1, 240)
         for (i in 0 until monitorCount) {
             parsers[i] = VideoFrameParser(i)
         }
+        initialized = true
         Log.i(TAG, "Initialized for $monitorCount monitors (codec=$codec, fps=$fps)")
+
+        // If Surface arrived before initialize(), create decoder now with correct codec
+        if (activeSurface != null) {
+            Log.i(TAG, "Surface was set before initialize, creating decoder now")
+            createActiveDecoder()
+        }
     }
 
     /** Set the single active Surface (from the one visible SurfaceView) */
     fun setActiveSurface(surface: Surface) {
         Log.i(TAG, "setActiveSurface valid=${surface.isValid}")
         activeSurface = surface
-        // Re-create decoder for active monitor with new surface
-        createActiveDecoder()
+        // Only create decoder if already initialized (codec is known).
+        // If not yet initialized, initialize() will create it when called.
+        if (initialized) {
+            createActiveDecoder()
+        }
     }
 
     fun onSurfaceDestroyed() {
@@ -91,6 +103,23 @@ class VideoDecoderManager @Inject constructor(
 
         decoder.setSurface(surface)
         activeDecoder = decoder
+    }
+
+    /** Callback to request keyframe from server after codec change */
+    var onCodecChanged: ((newCodec: String) -> Unit)? = null
+
+    /**
+     * Change codec mid-stream (e.g., server fell back from H265 to H264).
+     * Clears cached codec configs (they're for the old codec) and recreates the active decoder.
+     * After recreating, fires onCodecChanged so caller can request keyframe from server.
+     */
+    fun changeCodec(newCodec: String) {
+        if (newCodec == codecString) return
+        Log.i(TAG, "Codec changed: $codecString -> $newCodec")
+        codecString = newCodec
+        codecConfigs.clear() // Old codec configs are invalid for new codec
+        createActiveDecoder()
+        onCodecChanged?.invoke(newCodec)
     }
 
     fun startFrameCollection() {
@@ -222,6 +251,7 @@ class VideoDecoderManager @Inject constructor(
         parsers.clear()
         codecConfigs.clear()
         activeSurface = null
+        initialized = false
         _firstFrameReceived.value = emptySet()
         _activeMonitor.value = 0
     }

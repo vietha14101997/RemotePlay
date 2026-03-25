@@ -68,6 +68,32 @@ class VideoDecoder(
 
     companion object {
         private const val TAG = "VideoDecoder"
+
+        /**
+         * Split H264 codec config (Annex-B) into SPS and PPS.
+         * Input: [00 00 00 01 SPS_NAL ... 00 00 00 01 PPS_NAL ...]
+         * Returns: Pair(sps, pps) where pps is null if no PPS found.
+         */
+        fun splitH264Csd(csd: ByteArray): Pair<ByteArray, ByteArray?> {
+            // Find all start code positions (00 00 00 01)
+            val positions = mutableListOf<Int>()
+            for (i in 0..csd.size - 4) {
+                if (csd[i] == 0x00.toByte() && csd[i + 1] == 0x00.toByte() &&
+                    csd[i + 2] == 0x00.toByte() && csd[i + 3] == 0x01.toByte()) {
+                    positions.add(i)
+                }
+            }
+
+            if (positions.size < 2) {
+                // Only one NAL unit (or no start codes) — return as-is
+                return Pair(csd, null)
+            }
+
+            // SPS = first NAL, PPS = second NAL (and everything after)
+            val sps = csd.copyOfRange(positions[0], positions[1])
+            val pps = csd.copyOfRange(positions[1], csd.size)
+            return Pair(sps, pps)
+        }
     }
 
     fun setSurface(newSurface: Surface) = lock.withLock {
@@ -137,7 +163,18 @@ class VideoDecoder(
                 try { setInteger("output-reorder-depth", 0) } catch (_: Exception) {}
                 try { setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0) } catch (_: Exception) {}
                 try { setInteger("max-dec-frame-buffering", 1) } catch (_: Exception) {}
-                setByteBuffer("csd-0", ByteBuffer.wrap(csd))
+
+                if (codec == "H264") {
+                    // H264: split SPS and PPS into csd-0 and csd-1 for maximum device compatibility
+                    val (sps, pps) = splitH264Csd(csd)
+                    setByteBuffer("csd-0", ByteBuffer.wrap(sps))
+                    if (pps != null) {
+                        setByteBuffer("csd-1", ByteBuffer.wrap(pps))
+                    }
+                } else {
+                    // H265: VPS+SPS+PPS concatenated in csd-0 (standard for HEVC)
+                    setByteBuffer("csd-0", ByteBuffer.wrap(csd))
+                }
             }
 
             val codecName = MediaCodecList(MediaCodecList.REGULAR_CODECS)

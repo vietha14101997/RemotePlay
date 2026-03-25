@@ -216,6 +216,7 @@ class ConnectionViewModel @Inject constructor(
 
         webSocketClient.sendText(MessageParser.serialize(displayConfig))
         phaseTwoHandler.setConfiguredFps(streamFps)
+        phaseTwoHandler.setConfiguredCodec(config.selectedCodec)
 
         phaseOneHandler.sendProceed()
         phaseTwoHandler.startListening(viewModelScope)
