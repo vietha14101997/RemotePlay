@@ -45,6 +45,8 @@
     <string name="connecting">Connecting…</string>
     <string name="starting">Starting…</string>
     <string name="press_back_to_disconnect">Press back again to disconnect</string>
+    <string name="bind_mobile_screen">Bind Mobile Screen</string>
+    <string name="bind_mobile_description">Server will create a virtual monitor matching your phone</string>
 
     <!-- StreamingScreen -->
     <string name="waiting_for_video">Waiting for video…</string>

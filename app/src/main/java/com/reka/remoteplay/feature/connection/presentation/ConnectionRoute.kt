@@ -59,6 +59,7 @@ fun ConfigReviewRoute(
     val savedMonitors by viewModel.savedMonitors.collectAsState()
     val savedResolution by viewModel.savedResolution.collectAsState()
     val savedFps by viewModel.savedFps.collectAsState()
+    val bindMobileScreen by viewModel.bindMobileScreen.collectAsState()
 
     // Track if stream was paused — survives recomposition/backstack
     var isPaused by rememberSaveable { mutableStateOf(false) }
@@ -91,6 +92,9 @@ fun ConfigReviewRoute(
             savedResolution = savedResolution,
             savedFps = savedFps,
             connectionType = connectionType,
+            bindMobileScreen = bindMobileScreen,
+            deviceScreenSpecs = viewModel.deviceScreenSpecs,
+            onBindMobileScreenChanged = viewModel::setBindMobileScreen,
             onProceed = { monitors, resolution, fps ->
                 navigated = false
                 isPaused = false

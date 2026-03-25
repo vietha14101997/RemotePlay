@@ -22,6 +22,7 @@ import com.reka.remoteplay.feature.streaming.data.remote.AudioPlayer
 import com.reka.remoteplay.feature.streaming.data.remote.PhaseTwoHandler
 import com.reka.remoteplay.feature.streaming.data.remote.VideoDecoderManager
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlin.math.roundToInt
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -61,6 +62,14 @@ class ConnectionViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.Eagerly, 1080)
     val savedFps = preferences.streamFps
         .stateIn(viewModelScope, SharingStarted.Eagerly, 60)
+    val bindMobileScreen = preferences.bindMobileScreen
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    val deviceScreenSpecs = com.reka.remoteplay.core.util.ScreenSpecDetector.detect(application)
+
+    fun setBindMobileScreen(enabled: Boolean) {
+        viewModelScope.launch { preferences.saveBindMobileScreen(enabled) }
+    }
 
     private val _hostInput = MutableStateFlow("")
     private val _portInput = MutableStateFlow("8288")
@@ -157,28 +166,47 @@ class ConnectionViewModel @Inject constructor(
     fun proceed(monitors: Int, resolutionHeight: Int, fps: Int) {
         val config = suggestedConfig.value ?: return
 
-        viewModelScope.launch {
-            preferences.saveStreamSettings(monitors, resolutionHeight, fps)
+        val displayConfig: DisplayConfigMessage
+        val streamFps: Int
+
+        if (bindMobileScreen.value) {
+            // Bind Mobile mode: detect actual device screen specs at connection time
+            val specs = com.reka.remoteplay.core.util.ScreenSpecDetector.detect(getApplication())
+            val deviceHz = specs.refreshRate.roundToInt().coerceIn(30, 240)
+            streamFps = deviceHz.coerceAtMost(120)
+
+            displayConfig = DisplayConfigMessage(
+                monitors = 1,
+                resolution = ResolutionDto(width = specs.widthPx, height = specs.heightPx),
+                refreshRate = deviceHz,
+                bitrateKbps = config.bitrateKbps,
+                fps = streamFps,
+                monitorType = "bind_mobile",
+                isUsbMode = false
+            )
+        } else {
+            // Standard mode
+            viewModelScope.launch {
+                preferences.saveStreamSettings(monitors, resolutionHeight, fps)
+            }
+
+            val resWidth = when (resolutionHeight) {
+                720 -> 1280; 1080 -> 1920; 1440 -> 2560; 2160 -> 3840; else -> 1920
+            }
+            streamFps = fps
+            displayConfig = DisplayConfigMessage(
+                monitors = monitors,
+                resolution = ResolutionDto(width = resWidth, height = resolutionHeight),
+                refreshRate = fps,
+                bitrateKbps = config.bitrateKbps,
+                fps = fps,
+                monitorType = "standard",
+                isUsbMode = false
+            )
         }
 
-        val resWidth = when (resolutionHeight) {
-            720 -> 1280
-            1080 -> 1920
-            1440 -> 2560
-            2160 -> 3840
-            else -> 1920
-        }
-        val displayConfig = DisplayConfigMessage(
-            monitors = monitors,
-            resolution = ResolutionDto(width = resWidth, height = resolutionHeight),
-            refreshRate = fps,
-            bitrateKbps = config.bitrateKbps,
-            fps = fps,
-            monitorType = "standard",
-            isUsbMode = false
-        )
         webSocketClient.sendText(MessageParser.serialize(displayConfig))
-        phaseTwoHandler.setConfiguredFps(fps)
+        phaseTwoHandler.setConfiguredFps(streamFps)
 
         phaseOneHandler.sendProceed()
         phaseTwoHandler.startListening(viewModelScope)

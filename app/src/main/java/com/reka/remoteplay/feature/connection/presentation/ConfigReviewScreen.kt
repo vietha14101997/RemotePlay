@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.reka.remoteplay.core.model.HardwareInfoMessage
 import com.reka.remoteplay.core.model.SuggestedConfigMessage
+import com.reka.remoteplay.core.util.ScreenSpecs
 import com.reka.remoteplay.feature.connection.domain.model.ConnectionState
 
 @Composable
@@ -37,6 +38,9 @@ fun ConfigReviewScreen(
     savedResolution: Int = 1080,
     savedFps: Int = 60,
     connectionType: String = "Unknown",
+    bindMobileScreen: Boolean = false,
+    deviceScreenSpecs: ScreenSpecs = ScreenSpecs(1920, 1080, 60f),
+    onBindMobileScreenChanged: (Boolean) -> Unit = {},
     onProceed: (monitors: Int, resolutionHeight: Int, fps: Int) -> Unit,
     onResume: () -> Unit = {},
     onBack: () -> Unit
@@ -150,6 +154,42 @@ fun ConfigReviewScreen(
                     Text(stringResource(R.string.stream_settings), fontWeight = FontWeight.SemiBold, color = AppTextPrimary, fontSize = 16.sp)
                     Spacer(modifier = Modifier.height(16.dp))
 
+                    // Bind Mobile Screen toggle
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(stringResource(R.string.bind_mobile_screen), color = AppTextSecondary, fontSize = 14.sp)
+                        Switch(
+                            checked = bindMobileScreen,
+                            onCheckedChange = { if (settingsEnabled) onBindMobileScreenChanged(it) },
+                            enabled = settingsEnabled,
+                            colors = SwitchDefaults.colors(
+                                checkedTrackColor = AppAccent,
+                                uncheckedTrackColor = AppSurface
+                            )
+                        )
+                    }
+
+                    if (bindMobileScreen) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            "${deviceScreenSpecs.widthPx} x ${deviceScreenSpecs.heightPx} @ ${deviceScreenSpecs.refreshRate.toInt()}Hz",
+                            color = AppAccent,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            stringResource(R.string.bind_mobile_description),
+                            color = AppTextQuaternary,
+                            fontSize = 12.sp
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    if (!bindMobileScreen) {
                     // Monitor count
                     Text(stringResource(R.string.monitors_label), color = AppTextTertiary, fontSize = 13.sp)
                     Spacer(modifier = Modifier.height(4.dp))
@@ -225,6 +265,8 @@ fun ConfigReviewScreen(
                             }
                         }
                     }
+
+                    } // end if (!bindMobileScreen)
 
                     Spacer(modifier = Modifier.height(8.dp))
 
