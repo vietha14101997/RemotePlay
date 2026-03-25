@@ -36,7 +36,7 @@ class WebRtcManager @Inject constructor(
     val cursorData: SharedFlow<ByteArray> = _cursorData.asSharedFlow()
 
     private val _audioData = MutableSharedFlow<ByteArray>(
-        replay = 0, extraBufferCapacity = 64, onBufferOverflow = BufferOverflow.DROP_OLDEST
+        replay = 0, extraBufferCapacity = 8, onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
     val audioData: SharedFlow<ByteArray> = _audioData.asSharedFlow()
 

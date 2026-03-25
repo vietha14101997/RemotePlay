@@ -261,7 +261,9 @@ class VideoDecoder(
             mediaCodec?.flush()
             mediaCodec?.start()
             decoderBootstrapped = false
-            lastRenderNs = 0
+            // Seed pacing so first frame after flush renders immediately
+            // without a stale gap from lastRenderNs=0
+            lastRenderNs = System.nanoTime() - frameIntervalNs
             Log.i(TAG, "[$monitorIndex] Flushed, waiting for IDR")
         } catch (e: Exception) {
             Log.e(TAG, "[$monitorIndex] Flush error: ${e.message}")

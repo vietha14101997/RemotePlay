@@ -101,32 +101,32 @@ class AudioPlayer @Inject constructor(
 
         dcAudioJob = scope.launch(kotlinx.coroutines.Dispatchers.IO) {
             var count = 0L
+            // Pre-allocate reusable buffer to avoid GC pressure from amplify() every 10ms
+            var reusableBuffer: ByteArray? = null
             webRtcManager.audioData.collect { data ->
                 if (!_muted) {
-                    val boosted = amplify(data)
-                    audioTrack?.write(boosted, 0, boosted.size)
+                    // Reuse buffer if same size (typical: all packets are same size)
+                    val buf = reusableBuffer?.takeIf { it.size == data.size } ?: ByteArray(data.size)
+                    reusableBuffer = buf
+                    amplifyInto(data, buf)
+                    audioTrack?.write(buf, 0, buf.size, AudioTrack.WRITE_NON_BLOCKING)
                     count++
                     if (count == 1L) {
                         Log.i(TAG, "First audio: ${data.size}B, playState=${audioTrack?.playState}")
-                    }
-                    if (count % 500 == 0L) {
-                        Log.d(TAG, "Audio packets: $count (last=${data.size}B)")
                     }
                 }
             }
         }
     }
 
-    /** Amplify PCM16 samples by VOLUME_BOOST factor, with clipping */
-    private fun amplify(data: ByteArray): ByteArray {
-        val result = ByteArray(data.size)
-        for (i in 0 until data.size - 1 step 2) {
-            val sample = (data[i + 1].toInt() shl 8) or (data[i].toInt() and 0xFF)
+    /** Amplify PCM16 samples in-place into pre-allocated output buffer */
+    private fun amplifyInto(src: ByteArray, dst: ByteArray) {
+        for (i in 0 until src.size - 1 step 2) {
+            val sample = (src[i + 1].toInt() shl 8) or (src[i].toInt() and 0xFF)
             val amplified = (sample * VOLUME_BOOST).toInt().coerceIn(-32768, 32767)
-            result[i] = (amplified and 0xFF).toByte()
-            result[i + 1] = (amplified shr 8).toByte()
+            dst[i] = (amplified and 0xFF).toByte()
+            dst[i + 1] = (amplified shr 8).toByte()
         }
-        return result
     }
 
     fun setMuted(muted: Boolean) {
