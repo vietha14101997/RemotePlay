@@ -15,6 +15,8 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
@@ -160,6 +162,9 @@ fun StreamingScreen(
             .background(Color.Black)
     ) {
         // ===== Hidden TextField for soft keyboard input =====
+        // KeyboardType.Ascii bypasses IME composition (Telex/VNI/Unikey),
+        // so each key press sends immediately without waiting for compose.
+        // This prevents "a a" → "â" issue in games.
         BasicTextField(
             value = textFieldValue,
             onValueChange = { newValue ->
@@ -178,8 +183,15 @@ fun StreamingScreen(
                         onSendKey(0x08, true)
                         onSendKey(0x08, false)
                     }
-                    if (toSend.isNotEmpty()) {
-                        onSendText(toSend)
+                    for (ch in toSend) {
+                        val vk = charToVirtualKey(ch)
+                        if (vk != 0) {
+                            onSendKey(vk, true)
+                            onSendKey(vk, false)
+                        } else {
+                            // Fallback: Unicode characters without VK mapping
+                            onSendText(ch.toString())
+                        }
                     }
                     lastSentText = committed
                 }
@@ -189,6 +201,7 @@ fun StreamingScreen(
                     lastSentText = ""
                 }
             },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii),
             modifier = Modifier
                 .focusRequester(focusRequester)
                 .size(1.dp)
@@ -696,5 +709,26 @@ private fun MonitorTabBar(
                 }
             }
         }
+    }
+}
+
+// ===== Character → Windows Virtual Key mapping =====
+
+/** Map a character to its Windows Virtual Key code. Returns 0 if unmapped. */
+private fun charToVirtualKey(ch: Char): Int = when {
+    ch in 'a'..'z' -> 0x41 + (ch - 'a')
+    ch in 'A'..'Z' -> 0x41 + (ch - 'A')
+    ch in '0'..'9' -> 0x30 + (ch - '0')
+    else -> when (ch) {
+        ' ' -> 0x20
+        '\n', '\r' -> 0x0D
+        '\t' -> 0x09
+        '-' -> 0xBD; '=' -> 0xBB
+        '[' -> 0xDB; ']' -> 0xDD
+        '\\' -> 0xDC; ';' -> 0xBA
+        '\'' -> 0xDE; '`' -> 0xC0
+        ',' -> 0xBC; '.' -> 0xBE
+        '/' -> 0xBF
+        else -> 0
     }
 }
