@@ -10,6 +10,7 @@ import com.reka.remoteplay.core.model.DisplayConfigMessage
 import com.reka.remoteplay.core.model.ResolutionDto
 import com.reka.remoteplay.core.model.ResumeStreamingMessage
 import com.reka.remoteplay.core.network.MessageParser
+import com.reka.remoteplay.core.util.ScreenSpecDetector
 import com.reka.remoteplay.core.network.WebSocketClient
 import com.reka.remoteplay.core.network.WsConnectionState
 import com.reka.remoteplay.feature.connection.data.local.ConnectionPreferences
@@ -65,7 +66,7 @@ class ConnectionViewModel @Inject constructor(
     val bindMobileScreen = preferences.bindMobileScreen
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
-    val deviceScreenSpecs = com.reka.remoteplay.core.util.ScreenSpecDetector.detect(application)
+    val deviceScreenSpecs = ScreenSpecDetector.detect(application)
 
     fun setBindMobileScreen(enabled: Boolean) {
         viewModelScope.launch { preferences.saveBindMobileScreen(enabled) }
@@ -171,7 +172,7 @@ class ConnectionViewModel @Inject constructor(
 
         if (bindMobileScreen.value) {
             // Bind Mobile mode: detect actual device screen specs at connection time
-            val specs = com.reka.remoteplay.core.util.ScreenSpecDetector.detect(getApplication())
+            val specs = ScreenSpecDetector.detect(getApplication())
             val deviceHz = specs.refreshRate.roundToInt().coerceIn(30, 240)
             streamFps = deviceHz.coerceAtMost(120)
 

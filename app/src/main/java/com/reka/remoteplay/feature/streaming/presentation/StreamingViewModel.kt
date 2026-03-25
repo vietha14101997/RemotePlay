@@ -48,6 +48,10 @@ class StreamingViewModel @Inject constructor(
     private val _showUI = MutableStateFlow(false)
     val showUI: StateFlow<Boolean> = _showUI.asStateFlow()
 
+    private val _streamFps = MutableStateFlow(phaseTwoHandler.configuredFps.value)
+    val streamFps: StateFlow<Int> = _streamFps.asStateFlow()
+    val availableFpsOptions = phaseTwoHandler.availableFpsOptions
+
     private val _isMuted = MutableStateFlow(false)
     val isMuted: StateFlow<Boolean> = _isMuted.asStateFlow()
 
@@ -208,6 +212,13 @@ class StreamingViewModel @Inject constructor(
 
     fun toggleKeyboard() {
         _showKeyboard.value = !_showKeyboard.value
+    }
+
+    fun changeFps(newFps: Int) {
+        _streamFps.value = newFps
+        phaseTwoHandler.setConfiguredFps(newFps)
+        val msg = com.reka.remoteplay.core.model.UpdateConfigMessage(fps = newFps)
+        webSocketClient.sendText(MessageParser.serialize(msg))
     }
 
     fun sendText(text: String) {

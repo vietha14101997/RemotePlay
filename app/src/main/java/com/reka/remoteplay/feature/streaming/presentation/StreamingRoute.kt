@@ -22,6 +22,8 @@ fun StreamingRoute(
     val cursorState by viewModel.cursorState.collectAsState()
     val isDragging by viewModel.isDragging.collectAsState()
     val cursorImage by viewModel.cursorImage.collectAsState()
+    val streamFps by viewModel.streamFps.collectAsState()
+    val availableFpsOptions by viewModel.availableFpsOptions.collectAsState()
 
     StreamingScreen(
         monitors = monitors,
@@ -52,6 +54,9 @@ fun StreamingRoute(
         onSendMouseWheel = viewModel::sendMouseWheel,
         onSetDragging = viewModel::setDragging,
         onReConfineCursor = viewModel::reConfineCursor,
+        streamFps = streamFps,
+        availableFpsOptions = availableFpsOptions,
+        onChangeFps = viewModel::changeFps,
         onSurfaceCreated = { viewModel.videoDecoderManager.setActiveSurface(it) },
         onSurfaceDestroyed = { viewModel.videoDecoderManager.onSurfaceDestroyed() }
     )

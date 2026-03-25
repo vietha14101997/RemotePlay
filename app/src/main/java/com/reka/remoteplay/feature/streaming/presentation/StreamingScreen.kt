@@ -76,6 +76,9 @@ fun StreamingScreen(
     onSendMouseWheel: (Short, Short) -> Unit,
     onSetDragging: (Boolean) -> Unit,
     onReConfineCursor: () -> Unit,
+    streamFps: Int = 60,
+    availableFpsOptions: List<Int> = listOf(30, 60),
+    onChangeFps: (Int) -> Unit = {},
     onSurfaceCreated: (Surface) -> Unit,
     onSurfaceDestroyed: () -> Unit
 ) {
@@ -348,6 +351,16 @@ fun StreamingScreen(
                                         Toast.makeText(context, context.getString(R.string.press_back_to_show_ui), Toast.LENGTH_SHORT).show()
                                     }
                                 )
+
+                                // Dynamic FPS selector
+                                Spacer(modifier = Modifier.height(4.dp))
+                                availableFpsOptions.forEach { fps ->
+                                    FpsButton(
+                                        fps = fps,
+                                        isActive = streamFps == fps,
+                                        onClick = { onChangeFps(fps) }
+                                    )
+                                }
                             }
                         }
                     }
@@ -395,6 +408,24 @@ private fun MenuIconButton(
         contentAlignment = Alignment.Center
     ) {
         Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(22.dp))
+    }
+}
+
+/** FPS selector button inside menu */
+@Composable
+private fun FpsButton(fps: Int, isActive: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(36.dp)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = "$fps",
+            color = if (isActive) AppAccent else AppTextTertiary,
+            fontSize = 10.sp,
+            fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal
+        )
     }
 }
 
