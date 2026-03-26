@@ -2,6 +2,7 @@ package com.reka.remoteplay.feature.streaming.data.remote
 
 import android.util.Log
 import com.reka.remoteplay.core.model.*
+import com.reka.remoteplay.core.util.QualityPreset
 import com.reka.remoteplay.core.network.MessageParser
 import com.reka.remoteplay.core.network.WebSocketClient
 import com.reka.remoteplay.feature.connection.domain.model.ConnectionState
@@ -38,6 +39,23 @@ class PhaseTwoHandler @Inject constructor(
     val availableFpsOptions: StateFlow<List<Int>> = _availableFpsOptions.asStateFlow()
 
     fun setAvailableFpsOptions(options: List<Int>) { _availableFpsOptions.value = options }
+
+    private val _qualityPreset = MutableStateFlow(QualityPreset.Quality)
+    val qualityPreset: StateFlow<QualityPreset> = _qualityPreset.asStateFlow()
+
+    fun setQualityPreset(preset: QualityPreset) { _qualityPreset.value = preset }
+
+    /** Native screen dimensions (landscape) used for dynamic quality recalculation */
+    private val _screenWidth = MutableStateFlow(1920)
+    val screenWidth: StateFlow<Int> = _screenWidth.asStateFlow()
+
+    private val _screenHeight = MutableStateFlow(1080)
+    val screenHeight: StateFlow<Int> = _screenHeight.asStateFlow()
+
+    fun setScreenDimensions(width: Int, height: Int) {
+        _screenWidth.value = width
+        _screenHeight.value = height
+    }
 
     private var messageJob: Job? = null
 

@@ -24,6 +24,7 @@ fun StreamingRoute(
     val cursorImage by viewModel.cursorImage.collectAsState()
     val streamFps by viewModel.streamFps.collectAsState()
     val availableFpsOptions by viewModel.availableFpsOptions.collectAsState()
+    val qualityPreset by viewModel.qualityPreset.collectAsState()
 
     StreamingScreen(
         monitors = monitors,
@@ -58,6 +59,8 @@ fun StreamingRoute(
         availableFpsOptions = availableFpsOptions,
         onChangeFps = viewModel::changeFps,
         onSurfaceCreated = { viewModel.videoDecoderManager.setActiveSurface(it) },
-        onSurfaceDestroyed = { viewModel.videoDecoderManager.onSurfaceDestroyed() }
+        onSurfaceDestroyed = { viewModel.videoDecoderManager.onSurfaceDestroyed() },
+        qualityPreset = qualityPreset,
+        onChangeQualityPreset = viewModel::changeQualityPreset
     )
 }

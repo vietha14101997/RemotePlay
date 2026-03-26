@@ -6,6 +6,8 @@ import androidx.lifecycle.viewModelScope
 import com.reka.remoteplay.core.model.PauseMonitorMessage
 import com.reka.remoteplay.core.model.PauseStreamingMessage
 import com.reka.remoteplay.core.model.ResumeMonitorMessage
+import com.reka.remoteplay.core.util.EncoderResolutionCalculator
+import com.reka.remoteplay.core.util.QualityPreset
 import com.reka.remoteplay.core.network.MessageParser
 import com.reka.remoteplay.core.network.WebSocketClient
 import com.reka.remoteplay.feature.connection.domain.model.ConnectionState
@@ -51,6 +53,9 @@ class StreamingViewModel @Inject constructor(
     private val _streamFps = MutableStateFlow(phaseTwoHandler.configuredFps.value)
     val streamFps: StateFlow<Int> = _streamFps.asStateFlow()
     val availableFpsOptions = phaseTwoHandler.availableFpsOptions
+
+    private val _qualityPreset = MutableStateFlow(phaseTwoHandler.qualityPreset.value)
+    val qualityPreset: StateFlow<QualityPreset> = _qualityPreset.asStateFlow()
 
     private val _isMuted = MutableStateFlow(false)
     val isMuted: StateFlow<Boolean> = _isMuted.asStateFlow()
@@ -233,6 +238,20 @@ class StreamingViewModel @Inject constructor(
         _streamFps.value = newFps
         phaseTwoHandler.setConfiguredFps(newFps)
         val msg = com.reka.remoteplay.core.model.UpdateConfigMessage(fps = newFps)
+        webSocketClient.sendText(MessageParser.serialize(msg))
+    }
+
+    fun changeQualityPreset(preset: QualityPreset) {
+        _qualityPreset.value = preset
+        phaseTwoHandler.setQualityPreset(preset)
+
+        // Calculate new encoder-aligned resolution
+        val screenW = phaseTwoHandler.screenWidth.value
+        val screenH = phaseTwoHandler.screenHeight.value
+        val (_, alignedH) = EncoderResolutionCalculator.calculate(screenW, screenH, preset)
+
+        // Send update_config with new resolution height
+        val msg = com.reka.remoteplay.core.model.UpdateConfigMessage(resolutionHeight = alignedH)
         webSocketClient.sendText(MessageParser.serialize(msg))
     }
 

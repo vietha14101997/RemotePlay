@@ -52,11 +52,6 @@ class WebSocketClient @Inject constructor() {
     val pongEvents: SharedFlow<Unit> = _pongEvents.asSharedFlow()
 
     fun connect(host: String, port: Int = 8288, token: String? = null, isUsb: Boolean = false) {
-        pingJob?.cancel()
-        pingJob = null
-        webSocket?.close(1000, null)
-        webSocket = null
-
         val url = buildString {
             append("ws://")
             append(host)
@@ -68,6 +63,30 @@ class WebSocketClient @Inject constructor() {
             if (isUsb) params.add("transport=usb")
             if (params.isNotEmpty()) append("?${params.joinToString("&")}")
         }
+        connectWithUrl(url)
+    }
+
+    /**
+     * Connect via Cloudflare tunnel URL (e.g. https://xxx.trycloudflare.com).
+     * Uses wss:// scheme since tunnel provides HTTPS.
+     */
+    fun connectTunnel(tunnelUrl: String, token: String? = null) {
+        val baseUrl = tunnelUrl.trimEnd('/')
+            .replace("https://", "wss://")
+            .replace("http://", "ws://")
+        val url = buildString {
+            append(baseUrl)
+            append("/signal")
+            if (token != null) append("?token=$token")
+        }
+        connectWithUrl(url)
+    }
+
+    private fun connectWithUrl(url: String) {
+        pingJob?.cancel()
+        pingJob = null
+        webSocket?.close(1000, null)
+        webSocket = null
 
         Log.d(TAG, "Connecting to $url")
         _connectionState.value = WsConnectionState.CONNECTING

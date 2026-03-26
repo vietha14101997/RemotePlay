@@ -38,7 +38,8 @@ fun ConnectionScreen(
     onDisconnect: () -> Unit,
     onConnectToServer: (SavedServer) -> Unit,
     onConnectToDiscovered: (ServerDiscoveryService.DiscoveredServer) -> Unit,
-    onRemoveServer: (SavedServer) -> Unit
+    onRemoveServer: (SavedServer) -> Unit,
+    onScanQr: () -> Unit = {}
 ) {
     val isBusy = connectionState.isConnected
 
@@ -84,18 +85,36 @@ fun ConnectionScreen(
             // Server discovery
             if (!isBusy) {
                 if (!isScanning && discoveredServers.isEmpty()) {
-                    // Find Server button
-                    Button(
-                        onClick = onStartScan,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(50.dp),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = AppAccent)
+                    // Find Server + Scan QR buttons
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Icon(Icons.Default.Search, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(stringResource(R.string.find_server), fontWeight = FontWeight.SemiBold)
+                        Button(
+                            onClick = onStartScan,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(50.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = AppAccent)
+                        ) {
+                            Icon(Icons.Default.Search, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(stringResource(R.string.find_server), fontWeight = FontWeight.SemiBold)
+                        }
+
+                        OutlinedButton(
+                            onClick = onScanQr,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(50.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, AppAccent)
+                        ) {
+                            Icon(Icons.Default.QrCodeScanner, contentDescription = null, tint = AppAccent)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Scan QR", fontWeight = FontWeight.SemiBold, color = AppAccent)
+                        }
                     }
                 } else if (isScanning && discoveredServers.isEmpty()) {
                     // Scanning in progress

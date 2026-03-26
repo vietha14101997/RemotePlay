@@ -27,6 +27,8 @@ import androidx.compose.ui.unit.sp
 import com.reka.remoteplay.core.model.HardwareInfoMessage
 import com.reka.remoteplay.core.model.SuggestedConfigMessage
 import com.reka.remoteplay.core.util.ScreenSpecs
+import com.reka.remoteplay.core.util.EncoderResolutionCalculator
+import com.reka.remoteplay.core.util.QualityPreset
 import com.reka.remoteplay.core.util.buildFpsOptions
 import com.reka.remoteplay.feature.connection.domain.model.ConnectionState
 
@@ -42,7 +44,9 @@ fun ConfigReviewScreen(
     connectionType: String = "Unknown",
     bindMobileScreen: Boolean = false,
     deviceScreenSpecs: ScreenSpecs = ScreenSpecs(1920, 1080, 60f),
+    qualityPreset: QualityPreset = QualityPreset.Quality,
     onBindMobileScreenChanged: (Boolean) -> Unit = {},
+    onQualityPresetChanged: (QualityPreset) -> Unit = {},
     onProceed: (monitors: Int, resolutionHeight: Int, fps: Int) -> Unit,
     onResume: () -> Unit = {},
     onBack: () -> Unit
@@ -187,6 +191,49 @@ fun ConfigReviewScreen(
                         )
                         Text(
                             stringResource(R.string.bind_mobile_description),
+                            color = AppTextQuaternary,
+                            fontSize = 12.sp
+                        )
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        // Quality Preset selector
+                        Text("Quality Preset", color = AppTextTertiary, fontSize = 13.sp)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            QualityPreset.entries.forEach { preset ->
+                                val isSelected = qualityPreset == preset
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = if (isSelected) AppAccent.copy(alpha = 0.2f) else Color.Transparent,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clickable(enabled = settingsEnabled) { onQualityPresetChanged(preset) }
+                                ) {
+                                    Text(
+                                        text = preset.displayName,
+                                        color = if (isSelected) AppAccent else AppTextTertiary,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                        fontSize = 14.sp,
+                                        modifier = Modifier.padding(vertical = 10.dp),
+                                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                    )
+                                }
+                            }
+                        }
+
+                        // Show computed encoder-aligned resolution
+                        val landscapeW = maxOf(deviceScreenSpecs.widthPx, deviceScreenSpecs.heightPx)
+                        val landscapeH = minOf(deviceScreenSpecs.widthPx, deviceScreenSpecs.heightPx)
+                        val (alignedW, alignedH) = EncoderResolutionCalculator.calculate(
+                            landscapeW, landscapeH, qualityPreset
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            "Encoder: ${alignedW} × ${alignedH}",
                             color = AppTextQuaternary,
                             fontSize = 12.sp
                         )

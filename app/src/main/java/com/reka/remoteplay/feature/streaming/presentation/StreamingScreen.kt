@@ -80,15 +80,23 @@ fun StreamingScreen(
     streamFps: Int = 60,
     availableFpsOptions: List<Int> = listOf(30, 60),
     onChangeFps: (Int) -> Unit = {},
+    qualityPreset: com.reka.remoteplay.core.util.QualityPreset = com.reka.remoteplay.core.util.QualityPreset.Quality,
+    onChangeQualityPreset: (com.reka.remoteplay.core.util.QualityPreset) -> Unit = {},
     onSurfaceCreated: (Surface) -> Unit,
     onSurfaceDestroyed: () -> Unit
 ) {
     val context = LocalContext.current
     var uiHidden by remember { mutableStateOf(false) }
     var showFpsPicker by remember { mutableStateOf(false) }
+    var showQualityPicker by remember { mutableStateOf(false) }
 
-    // Close FPS picker when menu collapses
-    LaunchedEffect(showUI) { if (!showUI) showFpsPicker = false }
+    // Close pickers when menu collapses
+    LaunchedEffect(showUI) {
+        if (!showUI) {
+            showFpsPicker = false
+            showQualityPicker = false
+        }
+    }
 
     // Back handler: show UI if hidden, otherwise double-press to pause
     var backPressedOnce by remember { mutableStateOf(false) }
@@ -362,7 +370,21 @@ fun StreamingScreen(
                                 FpsButton(
                                     fps = streamFps,
                                     isActive = showFpsPicker,
-                                    onClick = { showFpsPicker = !showFpsPicker }
+                                    onClick = {
+                                        showFpsPicker = !showFpsPicker
+                                        if (showFpsPicker) showQualityPicker = false
+                                    }
+                                )
+
+                                // Quality preset label — click to open quality picker
+                                Spacer(modifier = Modifier.height(2.dp))
+                                QualityPresetButton(
+                                    preset = qualityPreset,
+                                    isActive = showQualityPicker,
+                                    onClick = {
+                                        showQualityPicker = !showQualityPicker
+                                        if (showQualityPicker) showFpsPicker = false
+                                    }
                                 )
                             }
                         }
@@ -392,6 +414,36 @@ fun StreamingScreen(
                                     onClick = {
                                         onChangeFps(fps)
                                         showFpsPicker = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Quality preset picker bar (top-center, horizontal)
+                AnimatedVisibility(
+                    visible = showQualityPicker,
+                    enter = fadeIn() + expandHorizontally(expandFrom = Alignment.CenterHorizontally),
+                    exit = fadeOut() + shrinkHorizontally(shrinkTowards = Alignment.CenterHorizontally),
+                    modifier = Modifier.align(Alignment.TopCenter).padding(top = 12.dp)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(22.dp),
+                        color = AppSurface.copy(alpha = 0.9f)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            com.reka.remoteplay.core.util.QualityPreset.entries.forEach { preset ->
+                                QualityPresetButton(
+                                    preset = preset,
+                                    isActive = qualityPreset == preset,
+                                    onClick = {
+                                        onChangeQualityPreset(preset)
+                                        showQualityPicker = false
                                     }
                                 )
                             }
@@ -455,6 +507,29 @@ private fun FpsButton(fps: Int, isActive: Boolean, onClick: () -> Unit) {
     ) {
         Text(
             text = "$fps",
+            color = if (isActive) AppAccent else AppTextTertiary,
+            fontSize = 10.sp,
+            fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal
+        )
+    }
+}
+
+/** Quality preset selector button inside menu */
+@Composable
+private fun QualityPresetButton(
+    preset: com.reka.remoteplay.core.util.QualityPreset,
+    isActive: Boolean,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .defaultMinSize(minWidth = 36.dp)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 4.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = preset.label,
             color = if (isActive) AppAccent else AppTextTertiary,
             fontSize = 10.sp,
             fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal

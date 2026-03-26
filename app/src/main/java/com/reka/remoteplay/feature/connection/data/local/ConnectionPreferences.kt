@@ -41,6 +41,7 @@ class ConnectionPreferences @Inject constructor(
         val STREAM_FPS = intPreferencesKey("stream_fps")
         val STREAM_VOLUME = intPreferencesKey("stream_volume")
         val BIND_MOBILE_SCREEN = booleanPreferencesKey("bind_mobile_screen")
+        val QUALITY_PRESET = stringPreferencesKey("quality_preset")
     }
 
     val savedServers: Flow<List<SavedServer>> = context.dataStore.data.map { prefs ->
@@ -55,6 +56,7 @@ class ConnectionPreferences @Inject constructor(
     val streamFps: Flow<Int> = context.dataStore.data.map { it[Keys.STREAM_FPS] ?: 60 }
     val streamVolume: Flow<Int> = context.dataStore.data.map { it[Keys.STREAM_VOLUME] ?: -1 }
     val bindMobileScreen: Flow<Boolean> = context.dataStore.data.map { it[Keys.BIND_MOBILE_SCREEN] ?: false }
+    val qualityPreset: Flow<String> = context.dataStore.data.map { it[Keys.QUALITY_PRESET] ?: "Quality" }
 
     suspend fun saveServer(server: SavedServer) {
         context.dataStore.edit { prefs ->
@@ -95,5 +97,9 @@ class ConnectionPreferences @Inject constructor(
 
     suspend fun saveBindMobileScreen(enabled: Boolean) {
         context.dataStore.edit { it[Keys.BIND_MOBILE_SCREEN] = enabled }
+    }
+
+    suspend fun saveQualityPreset(preset: String) {
+        context.dataStore.edit { it[Keys.QUALITY_PRESET] = preset }
     }
 }

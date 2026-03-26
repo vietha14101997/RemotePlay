@@ -10,6 +10,8 @@ import com.reka.remoteplay.core.model.DisplayConfigMessage
 import com.reka.remoteplay.core.model.ResolutionDto
 import com.reka.remoteplay.core.model.ResumeStreamingMessage
 import com.reka.remoteplay.core.network.MessageParser
+import com.reka.remoteplay.core.util.EncoderResolutionCalculator
+import com.reka.remoteplay.core.util.QualityPreset
 import com.reka.remoteplay.core.util.ScreenSpecDetector
 import com.reka.remoteplay.core.network.WebSocketClient
 import com.reka.remoteplay.core.network.WsConnectionState
@@ -68,8 +70,21 @@ class ConnectionViewModel @Inject constructor(
 
     val deviceScreenSpecs = ScreenSpecDetector.detect(application)
 
+    val savedQualityPreset = preferences.qualityPreset
+        .stateIn(viewModelScope, SharingStarted.Eagerly, "Quality")
+
+    /** Current quality preset as enum */
+    val qualityPreset: StateFlow<QualityPreset>
+        get() = savedQualityPreset.map { name ->
+            QualityPreset.entries.find { it.name == name } ?: QualityPreset.Quality
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, QualityPreset.Quality)
+
     fun setBindMobileScreen(enabled: Boolean) {
         viewModelScope.launch { preferences.saveBindMobileScreen(enabled) }
+    }
+
+    fun setQualityPreset(preset: QualityPreset) {
+        viewModelScope.launch { preferences.saveQualityPreset(preset.name) }
     }
 
     private val _hostInput = MutableStateFlow("")
@@ -154,6 +169,38 @@ class ConnectionViewModel @Inject constructor(
         connect()
     }
 
+    /**
+     * Connect using QR scan result.
+     * If tunnelUrl is available → internet mode (wss:// via Cloudflare tunnel).
+     * Otherwise → LAN mode (ws:// direct IP).
+     */
+    fun connectWithQrConfig(config: com.reka.remoteplay.core.model.QrScannerConfig) {
+        stopScan()
+        phaseOneHandler.reset()
+        phaseTwoHandler.reset()
+        connectionStateRepo.tryTransition(ConnectionState.Connecting)
+
+        val dm = getApplication<Application>().resources.displayMetrics
+        phaseOneHandler.startListening(viewModelScope, dm)
+
+        if (config.hasTunnelUrl) {
+            // Internet mode via Cloudflare tunnel
+            _hostInput.value = config.tunnelUrl!!
+            viewModelScope.launch {
+                preferences.saveServer(SavedServer(host = config.tunnelUrl, port = config.port))
+            }
+            webSocketClient.connectTunnel(config.tunnelUrl)
+        } else {
+            // LAN mode — direct IP
+            _hostInput.value = config.ip
+            _portInput.value = config.port.toString()
+            viewModelScope.launch {
+                preferences.saveServer(SavedServer(host = config.ip, port = config.port))
+            }
+            webSocketClient.connect(config.ip, config.port, isUsb = false)
+        }
+    }
+
     fun disconnect() {
         audioPlayer.stop()
         videoDecoderManager.releaseAll()
@@ -176,34 +223,53 @@ class ConnectionViewModel @Inject constructor(
             val deviceHz = specs.refreshRate.roundToInt().coerceIn(30, 240)
             streamFps = fps // User-selected FPS from UI
 
+            // Calculate encoder-aligned resolution based on quality preset
+            val preset = qualityPreset.value
+            val landscapeW = maxOf(specs.widthPx, specs.heightPx)
+            val landscapeH = minOf(specs.widthPx, specs.heightPx)
+            val (alignedW, alignedH) = EncoderResolutionCalculator.calculate(
+                landscapeW, landscapeH, preset
+            )
+
             displayConfig = DisplayConfigMessage(
                 monitors = 1,
-                resolution = ResolutionDto(width = specs.widthPx, height = specs.heightPx),
+                resolution = ResolutionDto(width = alignedW, height = alignedH),
                 refreshRate = deviceHz, // VDD runs at phone max Hz
                 bitrateKbps = config.bitrateKbps,
                 fps = streamFps,        // Encoder at user-selected FPS
                 monitorType = "bind_mobile",
                 isUsbMode = false
             )
+
+            // Store screen dimensions for dynamic quality changes during streaming
+            phaseTwoHandler.setScreenDimensions(landscapeW, landscapeH)
         } else {
             // Standard mode
             viewModelScope.launch {
                 preferences.saveStreamSettings(monitors, resolutionHeight, fps)
             }
 
-            val resWidth = when (resolutionHeight) {
+            // Calculate encoder-aligned resolution from standard height presets
+            val baseWidth = when (resolutionHeight) {
                 720 -> 1280; 1080 -> 1920; 1440 -> 2560; 2160 -> 3840; else -> 1920
             }
+            val (alignedW, alignedH) = EncoderResolutionCalculator.findAlignedResolution(
+                baseWidth, resolutionHeight, baseWidth
+            )
+
             streamFps = fps
             displayConfig = DisplayConfigMessage(
                 monitors = monitors,
-                resolution = ResolutionDto(width = resWidth, height = resolutionHeight),
+                resolution = ResolutionDto(width = alignedW, height = alignedH),
                 refreshRate = fps,
                 bitrateKbps = config.bitrateKbps,
                 fps = fps,
                 monitorType = "standard",
                 isUsbMode = false
             )
+
+            // Store screen dimensions for dynamic quality changes during streaming
+            phaseTwoHandler.setScreenDimensions(baseWidth, resolutionHeight)
         }
 
         // Compute and store available FPS options for streaming screen dynamic adjustment
@@ -217,6 +283,7 @@ class ConnectionViewModel @Inject constructor(
         webSocketClient.sendText(MessageParser.serialize(displayConfig))
         phaseTwoHandler.setConfiguredFps(streamFps)
         phaseTwoHandler.setConfiguredCodec(config.selectedCodec)
+        phaseTwoHandler.setQualityPreset(qualityPreset.value)
 
         phaseOneHandler.sendProceed()
         phaseTwoHandler.startListening(viewModelScope)

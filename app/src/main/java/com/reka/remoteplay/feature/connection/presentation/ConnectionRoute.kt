@@ -33,18 +33,32 @@ fun ConnectionRoute(
     val discoveredServers by viewModel.discoveredServers.collectAsState()
     val isScanning by viewModel.isScanning.collectAsState()
 
-    ConnectionScreen(
-        connectionState = connectionState,
-        savedServers = savedServers,
-        discoveredServers = discoveredServers,
-        isScanning = isScanning,
-        onStartScan = viewModel::startScan,
-        onStopScan = viewModel::stopScan,
-        onDisconnect = viewModel::disconnect,
-        onConnectToServer = viewModel::connectToServer,
-        onConnectToDiscovered = viewModel::connectToDiscovered,
-        onRemoveServer = viewModel::removeServer
-    )
+    // QR Scanner state
+    var showQrScanner by remember { mutableStateOf(false) }
+
+    if (showQrScanner) {
+        QrScannerScreen(
+            onResult = { config ->
+                showQrScanner = false
+                viewModel.connectWithQrConfig(config)
+            },
+            onBack = { showQrScanner = false }
+        )
+    } else {
+        ConnectionScreen(
+            connectionState = connectionState,
+            savedServers = savedServers,
+            discoveredServers = discoveredServers,
+            isScanning = isScanning,
+            onStartScan = viewModel::startScan,
+            onStopScan = viewModel::stopScan,
+            onDisconnect = viewModel::disconnect,
+            onConnectToServer = viewModel::connectToServer,
+            onConnectToDiscovered = viewModel::connectToDiscovered,
+            onRemoveServer = viewModel::removeServer,
+            onScanQr = { showQrScanner = true }
+        )
+    }
 }
 
 @Composable
@@ -60,6 +74,7 @@ fun ConfigReviewRoute(
     val savedResolution by viewModel.savedResolution.collectAsState()
     val savedFps by viewModel.savedFps.collectAsState()
     val bindMobileScreen by viewModel.bindMobileScreen.collectAsState()
+    val qualityPreset by viewModel.qualityPreset.collectAsState()
 
     // Track if stream was paused — survives recomposition/backstack
     var isPaused by rememberSaveable { mutableStateOf(false) }
@@ -94,7 +109,9 @@ fun ConfigReviewRoute(
             connectionType = connectionType,
             bindMobileScreen = bindMobileScreen,
             deviceScreenSpecs = viewModel.deviceScreenSpecs,
+            qualityPreset = qualityPreset,
             onBindMobileScreenChanged = viewModel::setBindMobileScreen,
+            onQualityPresetChanged = viewModel::setQualityPreset,
             onProceed = { monitors, resolution, fps ->
                 navigated = false
                 isPaused = false

@@ -98,6 +98,13 @@ dependencies {
     // --- Coroutines ---
     implementation(libs.kotlinx.coroutines.android)
 
+    // --- QR Code Scanner (ML Kit + CameraX) ---
+    implementation("com.google.mlkit:barcode-scanning:17.3.0")
+    implementation("androidx.camera:camera-core:1.4.0")
+    implementation("androidx.camera:camera-camera2:1.4.0")
+    implementation("androidx.camera:camera-lifecycle:1.4.0")
+    implementation("androidx.camera:camera-view:1.4.0")
+
     // --- Testing ---
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
