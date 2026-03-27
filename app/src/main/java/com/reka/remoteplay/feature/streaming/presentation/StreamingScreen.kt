@@ -31,6 +31,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -96,6 +97,33 @@ fun StreamingScreen(
     
     var uiHidden by remember { mutableStateOf(false) }
     var showQualityPicker by remember { mutableStateOf(false) }
+
+    // Zoom & Pan state
+    var zoomScale by remember { mutableFloatStateOf(1f) }
+    var panX by remember { mutableFloatStateOf(0f) }
+    var panY by remember { mutableFloatStateOf(0f) }
+    var zoomDelta by remember { mutableFloatStateOf(0f) }
+    var moveDeltaX by remember { mutableFloatStateOf(0f) }
+    var moveDeltaY by remember { mutableFloatStateOf(0f) }
+
+    // Continuous zoom/pan update while joystick is held
+    // panX/panY in -1..1 range, translation computed in graphicsLayer
+    LaunchedEffect(zoomDelta, moveDeltaX, moveDeltaY) {
+        if (zoomDelta == 0f && moveDeltaX == 0f && moveDeltaY == 0f) return@LaunchedEffect
+        while (true) {
+            if (zoomDelta != 0f) {
+                zoomScale = (zoomScale - zoomDelta * 0.03f).coerceIn(1f, 4f)
+            }
+            // Clamp pan (when zooming out, pan auto-shrinks since translation formula uses scale)
+            panX = panX.coerceIn(-1f, 1f)
+            panY = panY.coerceIn(-1f, 1f)
+            if (zoomScale > 1f && (moveDeltaX != 0f || moveDeltaY != 0f)) {
+                panX = (panX - moveDeltaX * 0.02f).coerceIn(-1f, 1f)
+                panY = (panY - moveDeltaY * 0.02f).coerceIn(-1f, 1f)
+            }
+            kotlinx.coroutines.delay(16L)
+        }
+    }
 
     LaunchedEffect(showUI) {
         if (!showUI) {
@@ -210,7 +238,18 @@ fun StreamingScreen(
         } else 16f / 9f
 
         Box(
-            modifier = Modifier.align(Alignment.Center).aspectRatio(videoAspectRatio).fillMaxSize()
+            modifier = Modifier
+                .align(Alignment.Center)
+                .aspectRatio(videoAspectRatio)
+                .fillMaxSize()
+                .graphicsLayer {
+                    scaleX = zoomScale
+                    scaleY = zoomScale
+                    // panX/Y in -1..1, translation = pan * containerSize * (scale-1) / 2
+                    // This ensures scaled content edges never go past container edges
+                    translationX = panX * size.width * (zoomScale - 1f) / 2f
+                    translationY = panY * size.height * (zoomScale - 1f) / 2f
+                }
         ) {
             VideoSurface(
                 onSurfaceCreated = onSurfaceCreated,
@@ -399,6 +438,30 @@ fun StreamingScreen(
                         activeIndex = activeMonitor,
                         onSelect = onSwitchMonitor,
                         modifier = Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = 12.dp)
+                    )
+                }
+
+                // Joysticks hidden when vertical menu is expanded
+                AnimatedVisibility(
+                    visible = !showUI,
+                    enter = fadeIn(),
+                    exit = fadeOut(),
+                    modifier = Modifier.align(Alignment.CenterStart).padding(start = 12.dp)
+                ) {
+                    VirtualJoystick(
+                        onDelta = { _, dy -> zoomDelta = dy },
+                        onRelease = { zoomDelta = 0f }
+                    )
+                }
+                AnimatedVisibility(
+                    visible = !showUI,
+                    enter = fadeIn(),
+                    exit = fadeOut(),
+                    modifier = Modifier.align(Alignment.CenterEnd).padding(end = 12.dp)
+                ) {
+                    VirtualJoystick(
+                        onDelta = { dx, dy -> moveDeltaX = dx; moveDeltaY = dy },
+                        onRelease = { moveDeltaX = 0f; moveDeltaY = 0f }
                     )
                 }
             }
