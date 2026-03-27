@@ -128,5 +128,6 @@ class PhaseOneHandler @Inject constructor(
         listeningScope = null
         _serverInfo.value = null
         _suggestedConfig.value = null
+        speedTestClient.reset()
     }
 }
