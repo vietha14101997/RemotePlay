@@ -27,10 +27,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        // Route hardware volume buttons to media stream (not call stream).
-        // libwebrtc uses VOICE_COMMUNICATION mode which maps volume to call stream,
-        // causing 150% max volume and wrong stream control.
-        volumeControlStream = AudioManager.STREAM_MUSIC
+        volumeControlStream = AudioManager.STREAM_VOICE_CALL
         setContent {
             RemotePlayTheme {
                 Surface(
@@ -44,21 +41,27 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** Capture external mouse movement, scroll, and gamepad sticks/triggers */
+    /**
+     * Request pointer capture to hide local Android cursor and get relative mouse movement.
+     * This solves the "double cursor" issue and allows raw mouse input.
+     */
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            window.decorView.requestPointerCapture()
+        }
+    }
+
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
         if (externalInputHandler.onGenericMotionEvent(event)) return true
         return super.dispatchGenericMotionEvent(event)
     }
 
-    /** Capture external mouse buttons (press/release) */
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
         if (externalInputHandler.onMouseButtonEvent(event)) return true
         return super.dispatchTouchEvent(event)
     }
 
-    /** Capture physical keyboard and gamepad buttons */
-    // ComponentActivity.dispatchKeyEvent is marked @RestrictedApi but we need to override
-    // it to intercept physical keyboard/gamepad input before the default handler.
     @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (externalInputHandler.onKeyEvent(event)) return true

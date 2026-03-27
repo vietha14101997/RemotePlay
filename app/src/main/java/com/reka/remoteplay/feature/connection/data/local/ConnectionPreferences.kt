@@ -83,10 +83,9 @@ class ConnectionPreferences @Inject constructor(
         }
     }
 
-    suspend fun saveStreamSettings(monitors: Int, resolution: Int, fps: Int) {
+    suspend fun saveStreamSettings(monitors: Int, fps: Int) {
         context.dataStore.edit { prefs ->
             prefs[Keys.STREAM_MONITORS] = monitors
-            prefs[Keys.STREAM_RESOLUTION] = resolution
             prefs[Keys.STREAM_FPS] = fps
         }
     }

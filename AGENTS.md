@@ -1,6 +1,6 @@
-# AGENTS.md - Complete Guide to the .claude System
+# AGENTS.md - Complete Guide to the agentskill System
 
-> **Purpose**: Teach any AI model to fully leverage the .claude (ClaudeKit) system — from analyzing a user request to selecting the optimal skill/command/agent combination and executing end-to-end workflows.
+> **Purpose**: Teach any AI model to fully leverage the agentskill (ClaudeKit) system — from analyzing a user request to selecting the optimal skill/command/agent combination and executing end-to-end workflows.
 >
 > **How to use**: Read this file at session start. Use the Decision Engine (Section 3) to route every user request. Follow Workflow Patterns (Section 7) for execution.
 
@@ -26,7 +26,7 @@
 
 ## 1. Introduction
 
-The `.claude/` directory is a **capability amplification system** for AI coding agents. It transforms a general-purpose AI into a specialized software engineering team through:
+The `agentskill/` directory is a **capability amplification system** for AI coding agents. It transforms a general-purpose AI into a specialized software engineering team through:
 
 - **Slash commands** (`/cook`, `/plan`, `/fix`, etc.) — 60+ entry points that trigger structured workflows
 - **Subagents** — 17 specialized agents (planner, tester, debugger, etc.) that work in parallel or sequence
@@ -41,7 +41,7 @@ The `.claude/` directory is a **capability amplification system** for AI coding 
 ## 2. System Architecture
 
 ```
-.claude/
+agentskill/
 ├── agents/          # 17 subagent role definitions (.md files)
 ├── commands/        # 50+ slash commands organized in subdirectories
 ├── skills/          # 30+ skill packages (SKILL.md + references/ + scripts/)
@@ -221,7 +221,7 @@ Commands have implicit power levels (0-5) controlling scope and risk:
 | `/journal` | Document incidents | Technical difficulties, lessons learned |
 | `/watzup` | Review recent changes | Session wrap-up, status check |
 | `/use-mcp` | Activate MCP server tools | External tool integration |
-| `/ck-help` | ClaudeKit usage guide | How to use .claude features |
+| `/ck-help` | ClaudeKit usage guide | How to use agentskill features |
 
 ### Plan Commands
 | Command | Description | When to Use |
@@ -330,7 +330,7 @@ planner → fullstack-developer → tester → code-reviewer → git-manager
 
 ## 6. Skills Catalog
 
-Skills are domain knowledge packages auto-activated by task type. Located in `.claude/skills/*/SKILL.md`.
+Skills are domain knowledge packages auto-activated by task type. Located in `agentskill/skills/*/SKILL.md`.
 
 | Domain | Skills | Activate When |
 |--------|--------|---------------|
@@ -344,10 +344,10 @@ Skills are domain knowledge packages auto-activated by task type. Located in `.c
 | **Frameworks** | `web-frameworks`, `shopify`, `google-adk-python` | Next.js, Turborepo, Shopify, ADK |
 | **Planning** | `planning`, `research`, `sequential-thinking`, `problem-solving` | Architecture decisions, complex analysis |
 | **Quality** | `code-review`, `debugging` | Code review, systematic debugging |
-| **Claude System** | `claude-code`, `mcp-builder`, `mcp-management`, `skill-creator` | Configuring .claude itself |
+| **Claude System** | `claude-code`, `mcp-builder`, `mcp-management`, `skill-creator` | Configuring agentskill itself |
 | **Media** | `media-processing` | FFmpeg, ImageMagick, background removal |
 
-**How skills activate**: Automatically loaded when task type matches. Or manually via reading `.claude/skills/<name>/SKILL.md`. Use `docs-seeker` skill to fetch latest library/framework docs.
+**How skills activate**: Automatically loaded when task type matches. Or manually via reading `agentskill/skills/<name>/SKILL.md`. Use `docs-seeker` skill to fetch latest library/framework docs.
 
 ---
 
@@ -400,7 +400,7 @@ agents in parallel → Integration → Test → Review → Docs → Git
 
 ## 8. Plan System
 
-Plans coordinate multi-phase work across sessions. Stored in `.claude/plans/`.
+Plans coordinate multi-phase work across sessions. Stored in `agentskill/plans/`.
 
 ### Directory Structure
 ```
@@ -417,10 +417,10 @@ plans/YYYYMMDD-HHmm-plan-name/
 ### Active Plan Tracking
 ```bash
 # Set active plan (auto-done by /plan commands):
-echo "plans/20260325-1400-feature-name" > .claude/active-plan
+echo "plans/20260325-1400-feature-name" > agentskill/active-plan
 
 # Read at session start to resume work:
-cat .claude/active-plan
+cat agentskill/active-plan
 ```
 
 ### Phase Gates
@@ -430,7 +430,7 @@ Each phase must pass: deliverables produced → acceptance criteria verified →
 
 ## 9. Memory System
 
-Persistent file-based memory at `~/.claude/projects/<project>/memory/`.
+Persistent file-based memory at `~/agentskill/projects/<project>/memory/`.
 
 ### What Goes in Memory
 | Type | What to Store | Example |
@@ -480,7 +480,7 @@ Hooks trigger scripts at specific points in the workflow. Configured in `setting
 
 ### Customization
 - Edit `.ckignore` to add/remove blocked patterns for scout-block
-- Add env vars in `.claude/.env` or `.claude/hooks/.env` for notifications
+- Add env vars in `agentskill/.env` or `agentskill/hooks/.env` for notifications
 - Configure hooks in `settings.json` (shared) or `settings.local.json` (personal)
 
 ---

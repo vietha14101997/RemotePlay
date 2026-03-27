@@ -65,6 +65,7 @@ class VideoDecoder(
     private val frameIntervalNs = 1_000_000_000L / targetFps
 
     var onFirstFrame: (() -> Unit)? = null
+    var onDecoderReady: (() -> Unit)? = null
 
     companion object {
         private const val TAG = "VideoDecoder"
@@ -117,7 +118,21 @@ class VideoDecoder(
         lock.withLock {
             when (frame.type) {
                 VideoFrameParser.FrameType.CODEC_CONFIG -> {
+                    val isParamsChanged = configured && codecConfigData != null
+                        && !frame.data.contentEquals(codecConfigData)
                     codecConfigData = frame.data
+                    if (isParamsChanged) {
+                        // Resolution or codec params changed — release and reconfigure
+                        Log.i(TAG, "[$monitorIndex] Codec config changed, reconfiguring decoder")
+                        try { mediaCodec?.stop(); mediaCodec?.release() } catch (_: Exception) {}
+                        mediaCodec = null
+                        configured = false
+                        decoderBootstrapped = false
+                        availableInputBuffers.clear()
+                        callbackThread?.quitSafely()
+                        callbackThread = null
+                        callbackHandler = null
+                    }
                     if (surface != null && !configured) {
                         configureCodec()
                     }
@@ -242,6 +257,7 @@ class VideoDecoder(
             mediaCodec = mc
             configured = true
             Log.i(TAG, "[$monitorIndex] Decoder configured (async): $codecName")
+            onDecoderReady?.invoke()
         } catch (e: Exception) {
             Log.e(TAG, "[$monitorIndex] Configure failed: ${e.message}", e)
         }

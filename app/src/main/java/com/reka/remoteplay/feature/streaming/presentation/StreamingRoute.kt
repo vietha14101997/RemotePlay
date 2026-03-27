@@ -61,6 +61,7 @@ fun StreamingRoute(
         onSurfaceCreated = { viewModel.videoDecoderManager.setActiveSurface(it) },
         onSurfaceDestroyed = { viewModel.videoDecoderManager.onSurfaceDestroyed() },
         qualityPreset = qualityPreset,
+        qualityPresetHeights = viewModel.qualityPresetHeights,
         onChangeQualityPreset = viewModel::changeQualityPreset
     )
 }

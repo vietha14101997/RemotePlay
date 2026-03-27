@@ -15,6 +15,6 @@ local.properties
 /.logs
 /app/release
 /docs
-/docs
 KEYSTORE
 README.md
+/agentskill

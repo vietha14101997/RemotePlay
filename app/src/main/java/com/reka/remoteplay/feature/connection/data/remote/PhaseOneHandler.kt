@@ -11,12 +11,10 @@ import com.reka.remoteplay.core.network.MessageParser
 import com.reka.remoteplay.core.network.WebSocketClient
 import com.reka.remoteplay.feature.connection.domain.model.ConnectionState
 import com.reka.remoteplay.feature.connection.domain.repository.ConnectionStateRepository
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Job
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -34,19 +32,17 @@ class PhaseOneHandler @Inject constructor(
     val suggestedConfig: StateFlow<SuggestedConfigMessage?> = _suggestedConfig.asStateFlow()
 
     private var messageJob: Job? = null
+    private var binaryJob: Job? = null
+    private var speedTestJob: Job? = null
     private var listeningScope: CoroutineScope? = null
 
     companion object {
         private const val TAG = "PhaseOneHandler"
     }
 
-    /**
-     * Starts collecting WebSocket text and binary frames for Phase 1.
-     * Must be called once the WebSocket connection is open.
-     * Cancel by calling [reset].
-     */
     fun startListening(scope: CoroutineScope, displayMetrics: DisplayMetrics) {
         listeningScope = scope
+        
         messageJob?.cancel()
         messageJob = scope.launch {
             webSocketClient.textMessages.collect { text ->
@@ -54,8 +50,8 @@ class PhaseOneHandler @Inject constructor(
             }
         }
 
-        // Binary frames feed the bandwidth measurement in SpeedTestClient
-        scope.launch {
+        binaryJob?.cancel()
+        binaryJob = scope.launch {
             webSocketClient.binaryMessages.collect { data ->
                 speedTestClient.handleBinaryData(data)
             }
@@ -79,11 +75,11 @@ class PhaseOneHandler @Inject constructor(
                     perTrackPc = true
                 )
                 webSocketClient.sendText(MessageParser.serialize(ack))
-                Log.d(TAG, "Sent hardware_info_ack (codec=${codecs.preferredCodec}, perTrackPc=true)")
-
+                
                 connectionStateRepo.tryTransition(ConnectionState.SpeedTesting)
 
-                listeningScope?.launch {
+                speedTestJob?.cancel()
+                speedTestJob = listeningScope?.launch {
                     try {
                         speedTestClient.runSpeedTest()
                         connectionStateRepo.tryTransition(ConnectionState.AwaitingNetworkInfo)
@@ -98,28 +94,17 @@ class PhaseOneHandler @Inject constructor(
             }
 
             "speedtest_end" -> {
-                Log.d(TAG, "Received speedtest_end")
                 speedTestClient.handleSpeedTestEnd()
             }
 
             "suggested_config" -> {
-                Log.d(TAG, "Received suggested_config")
                 val msg = MessageParser.parse<SuggestedConfigMessage>(text) ?: return
                 _suggestedConfig.value = msg
-                connectionStateRepo.tryTransition(
-                    ConnectionState.ConfiguringSettings
-                )
-                Log.d(
-                    TAG,
-                    "Config: ${msg.monitors} monitors, " +
-                        "${msg.resolution.width}x${msg.resolution.height}@${msg.fps}fps, " +
-                        "codec=${msg.selectedCodec}"
-                )
+                connectionStateRepo.tryTransition(ConnectionState.ConfiguringSettings)
             }
 
             "error" -> {
                 val msg = MessageParser.parse<ErrorMessage>(text) ?: return
-                Log.e(TAG, "Server error: [${msg.code}] ${msg.message}")
                 connectionStateRepo.forceTransition(
                     ConnectionState.Error(msg.message, phase = msg.phase)
                 )
@@ -127,23 +112,22 @@ class PhaseOneHandler @Inject constructor(
         }
     }
 
-    /**
-     * Sends the `proceed` message to advance the server to Phase 2.
-     * Call this after the user confirms the [suggestedConfig].
-     */
     fun sendProceed() {
         val proceed = ProceedMessage(phase = 2)
         webSocketClient.sendText(MessageParser.serialize(proceed))
         connectionStateRepo.tryTransition(ConnectionState.SendingDisplayConfig)
-        Log.d(TAG, "Sent proceed (phase=2)")
     }
 
-    /** Cancels all listeners and clears cached state. Call on disconnect or reconnect. */
     fun reset() {
         messageJob?.cancel()
+        binaryJob?.cancel()
+        speedTestJob?.cancel()
         messageJob = null
+        binaryJob = null
+        speedTestJob = null
         listeningScope = null
         _serverInfo.value = null
         _suggestedConfig.value = null
+        speedTestClient.reset()
     }
 }

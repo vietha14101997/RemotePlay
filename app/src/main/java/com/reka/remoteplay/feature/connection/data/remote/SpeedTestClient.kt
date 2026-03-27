@@ -147,7 +147,9 @@ class SpeedTestClient @Inject constructor(
                 pongRttMs = (now - start) / 1_000_000.0
                 pingStartNanos = 0L
             }
-            pongReceived.complete(true)
+            if (pongReceived.isActive) {
+                pongReceived.complete(true)
+            }
         }
     }
 
@@ -228,7 +230,9 @@ class SpeedTestClient @Inject constructor(
 
         val mbps = calculateBandwidth()
         Log.d(TAG, "speedtest_end received – ${bytesReceived.get()} bytes = ${"%.1f".format(mbps)} Mbps")
-        bandwidthResult.complete(mbps)
+        if (bandwidthResult.isActive) {
+            bandwidthResult.complete(mbps)
+        }
     }
 
     private fun calculateBandwidth(): Double {
@@ -236,5 +240,17 @@ class SpeedTestClient @Inject constructor(
         if (measurementStartNanos == 0L || bytes == 0L) return 0.0
         val elapsedSeconds = (System.nanoTime() - measurementStartNanos) / 1_000_000_000.0
         return if (elapsedSeconds > 0) (bytes * 8.0) / (elapsedSeconds * 1_000_000) else 0.0
+    }
+
+    fun reset() {
+        isRunning = false
+        if (bandwidthResult.isActive) {
+            bandwidthResult.complete(0.0)
+        }
+        if (pongReceived.isActive) {
+            pongReceived.complete(false)
+        }
+        _progress.value = 0f
+        _status.value = ""
     }
 }

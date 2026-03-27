@@ -71,7 +71,6 @@ fun ConfigReviewRoute(
     val serverInfo by viewModel.serverInfo.collectAsState()
     val suggestedConfig by viewModel.suggestedConfig.collectAsState()
     val savedMonitors by viewModel.savedMonitors.collectAsState()
-    val savedResolution by viewModel.savedResolution.collectAsState()
     val savedFps by viewModel.savedFps.collectAsState()
     val bindMobileScreen by viewModel.bindMobileScreen.collectAsState()
     val qualityPreset by viewModel.qualityPreset.collectAsState()
@@ -104,7 +103,6 @@ fun ConfigReviewRoute(
             connectionState = connectionState,
             isPaused = isPaused,
             savedMonitors = savedMonitors,
-            savedResolution = savedResolution,
             savedFps = savedFps,
             connectionType = connectionType,
             bindMobileScreen = bindMobileScreen,
@@ -112,10 +110,10 @@ fun ConfigReviewRoute(
             qualityPreset = qualityPreset,
             onBindMobileScreenChanged = viewModel::setBindMobileScreen,
             onQualityPresetChanged = viewModel::setQualityPreset,
-            onProceed = { monitors, resolution, fps ->
+            onProceed = { monitors, fps ->
                 navigated = false
                 isPaused = false
-                viewModel.proceed(monitors, resolution, fps)
+                viewModel.proceed(monitors, fps)
             },
             onResume = {
                 viewModel.resumeStreaming()
