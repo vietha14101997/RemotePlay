@@ -1,5 +1,4 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
-import com.android.build.api.dsl.ApplicationExtension
 
 plugins {
     alias(libs.plugins.android.application)
@@ -10,7 +9,7 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
-extensions.configure<ApplicationExtension>("android") {
+android {
     namespace = "com.reka.remoteplay"
     compileSdk = 36
 
