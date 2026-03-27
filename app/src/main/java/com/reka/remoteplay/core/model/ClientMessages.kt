@@ -83,10 +83,18 @@ data class ResumeMonitorMessage(
 )
 
 @JsonClass(generateAdapter = true)
+data class DecoderReadyMessage(
+    @Json(name = "type") val type: String = "decoder_ready",
+    @Json(name = "monitorIndex") val monitorIndex: Int = 0
+)
+
+@JsonClass(generateAdapter = true)
 data class UpdateConfigMessage(
     @Json(name = "type") val type: String = "update_config",
     @Json(name = "fps") val fps: Int? = null,
-    @Json(name = "resolutionHeight") val resolutionHeight: Int? = null
+    @Json(name = "qualityPreset") val qualityPreset: String? = null,
+    @Json(name = "screenWidth") val screenWidth: Int? = null,
+    @Json(name = "screenHeight") val screenHeight: Int? = null,
 )
 
 // ==================== Feedback: Client -> Server ====================

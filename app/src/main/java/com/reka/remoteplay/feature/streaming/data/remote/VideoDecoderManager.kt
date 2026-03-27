@@ -91,6 +91,10 @@ class VideoDecoderManager @Inject constructor(
             _firstFrameReceived.value = _firstFrameReceived.value + monitorIndex
             Log.i(TAG, "★ Monitor $monitorIndex FIRST FRAME RENDERED ★")
         }
+        decoder.onDecoderReady = {
+            Log.i(TAG, "Monitor $monitorIndex decoder ready, signaling server")
+            onDecoderReady?.invoke(monitorIndex)
+        }
 
         // Apply cached codec config BEFORE surface so configureCodec() fires on setSurface()
         val cachedConfig = codecConfigs[monitorIndex]
@@ -104,6 +108,9 @@ class VideoDecoderManager @Inject constructor(
         decoder.setSurface(surface)
         activeDecoder = decoder
     }
+
+    /** Callback when decoder is configured and ready to receive frames */
+    var onDecoderReady: ((monitorIndex: Int) -> Unit)? = null
 
     /** Callback to request keyframe from server after codec change */
     var onCodecChanged: ((newCodec: String) -> Unit)? = null

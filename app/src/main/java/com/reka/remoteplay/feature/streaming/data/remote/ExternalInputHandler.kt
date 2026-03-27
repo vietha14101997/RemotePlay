@@ -113,6 +113,11 @@ class ExternalInputHandler @Inject constructor(
 
         if (!isPhysicalKeyboard(event)) return false
 
+        // Let Android handle volume keys locally (phone volume, not server)
+        if (event.keyCode == KeyEvent.KEYCODE_VOLUME_UP ||
+            event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN ||
+            event.keyCode == KeyEvent.KEYCODE_VOLUME_MUTE) return false
+
         val vk = androidKeyToWindowsVK(event.keyCode)?.toShort() ?: return false
         
         // Prevent key repeat flood; let the remote OS handle repeats
@@ -293,8 +298,6 @@ class ExternalInputHandler @Inject constructor(
         KeyEvent.KEYCODE_NUMPAD_SUBTRACT -> 0x6D; KeyEvent.KEYCODE_NUMPAD_DOT -> 0x6E
         KeyEvent.KEYCODE_NUMPAD_DIVIDE -> 0x6F
         KeyEvent.KEYCODE_SYSRQ -> 0x2C; KeyEvent.KEYCODE_BREAK -> 0x13
-        KeyEvent.KEYCODE_VOLUME_UP -> 0xAF; KeyEvent.KEYCODE_VOLUME_DOWN -> 0xAE
-        KeyEvent.KEYCODE_VOLUME_MUTE -> 0xAD
         else -> null
     }
 }

@@ -54,6 +54,16 @@ class StreamingViewModel @Inject constructor(
     private val _qualityPreset = MutableStateFlow(phaseTwoHandler.qualityPreset.value)
     val qualityPreset: StateFlow<QualityPreset> = _qualityPreset.asStateFlow()
 
+    val qualityPresetHeights: Map<QualityPreset, Int>
+        get() {
+            val sw = phaseTwoHandler.screenWidth.value
+            val sh = phaseTwoHandler.screenHeight.value
+            val maxQH = phaseTwoHandler.maxQualityHeight.value
+            return QualityPreset.entries.associateWith { preset ->
+                EncoderResolutionCalculator.calculate(sw, sh, preset, maxQH).second
+            }
+        }
+
     private val _isMuted = MutableStateFlow(false)
     val isMuted: StateFlow<Boolean> = _isMuted.asStateFlow()
 
@@ -82,6 +92,12 @@ class StreamingViewModel @Inject constructor(
         
         videoDecoderManager.initialize(monitorList.size, codec, fps)
         videoDecoderManager.startFrameCollection()
+
+        // Signal server when decoder is ready so it re-sends codec config + IDR
+        videoDecoderManager.onDecoderReady = { monitorIndex ->
+            val msg = com.reka.remoteplay.core.model.DecoderReadyMessage(monitorIndex = monitorIndex)
+            webSocketClient.sendText(MessageParser.serialize(msg))
+        }
 
         // UI Feedback for codec change
         videoDecoderManager.onCodecChanged = { newCodec ->
@@ -213,8 +229,11 @@ class StreamingViewModel @Inject constructor(
         phaseTwoHandler.setQualityPreset(preset)
         val screenW = phaseTwoHandler.screenWidth.value
         val screenH = phaseTwoHandler.screenHeight.value
-        val (_, alignedH) = EncoderResolutionCalculator.calculate(screenW, screenH, preset)
-        val msg = com.reka.remoteplay.core.model.UpdateConfigMessage(resolutionHeight = alignedH)
+        val msg = com.reka.remoteplay.core.model.UpdateConfigMessage(
+            qualityPreset = preset.name,
+            screenWidth = screenW,
+            screenHeight = screenH,
+        )
         webSocketClient.sendText(MessageParser.serialize(msg))
     }
 

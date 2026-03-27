@@ -211,8 +211,9 @@ class ConnectionViewModel @Inject constructor(
         stopScan()
     }
 
-    fun proceed(monitors: Int, resolutionHeight: Int, fps: Int) {
+    fun proceed(monitors: Int, fps: Int) {
         val config = suggestedConfig.value ?: return
+        val preset = qualityPreset.value
 
         val displayConfig: DisplayConfigMessage
         val streamFps: Int
@@ -221,40 +222,34 @@ class ConnectionViewModel @Inject constructor(
             // Bind Mobile mode: VDD refresh rate = phone max Hz, stream FPS = user-selected
             val specs = ScreenSpecDetector.detect(getApplication())
             val deviceHz = specs.refreshRate.roundToInt().coerceIn(30, 240)
-            streamFps = fps // User-selected FPS from UI
+            streamFps = fps
 
-            // Calculate encoder-aligned resolution based on quality preset
-            val preset = qualityPreset.value
             val landscapeW = maxOf(specs.widthPx, specs.heightPx)
             val landscapeH = minOf(specs.widthPx, specs.heightPx)
+            val maxQH = serverInfo.value?.maxQualityHeight ?: 1440
             val (alignedW, alignedH) = EncoderResolutionCalculator.calculate(
-                landscapeW, landscapeH, preset
+                landscapeW, landscapeH, preset, maxQH
             )
 
             displayConfig = DisplayConfigMessage(
                 monitors = 1,
                 resolution = ResolutionDto(width = alignedW, height = alignedH),
-                refreshRate = deviceHz, // VDD runs at phone max Hz
+                refreshRate = deviceHz,
                 bitrateKbps = config.bitrateKbps,
-                fps = streamFps,        // Encoder at user-selected FPS
+                fps = streamFps,
                 monitorType = "bind_mobile",
                 isUsbMode = false
             )
 
-            // Store screen dimensions for dynamic quality changes during streaming
             phaseTwoHandler.setScreenDimensions(landscapeW, landscapeH)
+            phaseTwoHandler.setMaxQualityHeight(maxQH)
         } else {
-            // Standard mode
-            viewModelScope.launch {
-                preferences.saveStreamSettings(monitors, resolutionHeight, fps)
-            }
-
-            // Calculate encoder-aligned resolution from standard height presets
-            val baseWidth = when (resolutionHeight) {
-                720 -> 1280; 1080 -> 1920; 1440 -> 2560; 2160 -> 3840; else -> 1920
-            }
-            val (alignedW, alignedH) = EncoderResolutionCalculator.findAlignedResolution(
-                baseWidth, resolutionHeight, baseWidth
+            // Standard mode: use server suggested resolution + quality preset
+            val maxQH = serverInfo.value?.maxQualityHeight ?: 1440
+            val sugW = config.resolution.width
+            val sugH = config.resolution.height
+            val (alignedW, alignedH) = EncoderResolutionCalculator.calculate(
+                sugW, sugH, preset, maxQH
             )
 
             streamFps = fps
@@ -268,8 +263,13 @@ class ConnectionViewModel @Inject constructor(
                 isUsbMode = false
             )
 
-            // Store screen dimensions for dynamic quality changes during streaming
-            phaseTwoHandler.setScreenDimensions(baseWidth, resolutionHeight)
+            phaseTwoHandler.setScreenDimensions(sugW, sugH)
+            phaseTwoHandler.setMaxQualityHeight(maxQH)
+        }
+
+        // Save settings
+        viewModelScope.launch {
+            preferences.saveStreamSettings(monitors, fps)
         }
 
         // Compute and store available FPS options for streaming screen dynamic adjustment

@@ -57,6 +57,14 @@ class PhaseTwoHandler @Inject constructor(
         _screenHeight.value = height
     }
 
+    /** GPU-aware max quality height from server */
+    private val _maxQualityHeight = MutableStateFlow(1440)
+    val maxQualityHeight: StateFlow<Int> = _maxQualityHeight.asStateFlow()
+
+    fun setMaxQualityHeight(height: Int) {
+        _maxQualityHeight.value = height
+    }
+
     private var messageJob: Job? = null
 
     companion object {

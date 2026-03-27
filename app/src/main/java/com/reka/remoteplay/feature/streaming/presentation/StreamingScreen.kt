@@ -85,6 +85,7 @@ fun StreamingScreen(
     availableFpsOptions: List<Int> = listOf(30, 60),
     onChangeFps: (Int) -> Unit = {},
     qualityPreset: com.reka.remoteplay.core.util.QualityPreset = com.reka.remoteplay.core.util.QualityPreset.Quality,
+    qualityPresetHeights: Map<com.reka.remoteplay.core.util.QualityPreset, Int> = emptyMap(),
     onChangeQualityPreset: (com.reka.remoteplay.core.util.QualityPreset) -> Unit = {},
     onSurfaceCreated: (Surface) -> Unit,
     onSurfaceDestroyed: () -> Unit
@@ -94,12 +95,10 @@ fun StreamingScreen(
     val isHardwareKeyboardAvailable = config.hardKeyboardHidden == Configuration.HARDKEYBOARDHIDDEN_NO
     
     var uiHidden by remember { mutableStateOf(false) }
-    var showFpsPicker by remember { mutableStateOf(false) }
     var showQualityPicker by remember { mutableStateOf(false) }
 
     LaunchedEffect(showUI) {
         if (!showUI) {
-            showFpsPicker = false
             showQualityPicker = false
         }
     }
@@ -140,7 +139,7 @@ fun StreamingScreen(
     DisposableEffect(Unit) {
         val activity = context as? Activity ?: return@DisposableEffect onDispose {}
         activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-        activity.volumeControlStream = android.media.AudioManager.STREAM_MUSIC
+        activity.volumeControlStream = android.media.AudioManager.STREAM_VOICE_CALL
         activity.window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         val window = activity.window
@@ -323,43 +322,21 @@ fun StreamingScreen(
                                 )
 
                                 Spacer(modifier = Modifier.height(4.dp))
-                                FpsButton(
-                                    fps = streamFps,
-                                    isActive = showFpsPicker,
-                                    onClick = {
-                                        showFpsPicker = !showFpsPicker
-                                        if (showFpsPicker) showQualityPicker = false
-                                    }
-                                )
-
-                                Spacer(modifier = Modifier.height(2.dp))
-                                QualityPresetButton(
-                                    preset = qualityPreset,
-                                    isActive = showQualityPicker,
-                                    onClick = {
-                                        showQualityPicker = !showQualityPicker
-                                        if (showQualityPicker) showFpsPicker = false
-                                    }
-                                )
-                            }
-                        }
-                    }
-                }
-
-                AnimatedVisibility(
-                    visible = showFpsPicker,
-                    enter = fadeIn() + expandHorizontally(expandFrom = Alignment.CenterHorizontally),
-                    exit = fadeOut() + shrinkHorizontally(shrinkTowards = Alignment.CenterHorizontally),
-                    modifier = Modifier.align(Alignment.TopCenter).padding(top = 12.dp)
-                ) {
-                    Surface(shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                            horizontalArrangement = Arrangement.spacedBy(2.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            availableFpsOptions.forEach { fps ->
-                                FpsButton(fps = fps, isActive = streamFps == fps, onClick = { onChangeFps(fps); showFpsPicker = false })
+                                Box(
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .clickable {
+                                            showQualityPicker = !showQualityPicker
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        Icons.Default.Tune,
+                                        contentDescription = "Settings",
+                                        tint = if (showQualityPicker) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
                             }
                         }
                     }
@@ -371,14 +348,36 @@ fun StreamingScreen(
                     exit = fadeOut() + shrinkHorizontally(shrinkTowards = Alignment.CenterHorizontally),
                     modifier = Modifier.align(Alignment.TopCenter).padding(top = 12.dp)
                 ) {
-                    Surface(shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                            horizontalArrangement = Arrangement.spacedBy(2.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            com.reka.remoteplay.core.util.QualityPreset.entries.forEach { preset ->
-                                QualityPresetButton(preset = preset, isActive = qualityPreset == preset, onClick = { onChangeQualityPreset(preset); showQualityPicker = false })
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        // Quality presets
+                        Surface(shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                com.reka.remoteplay.core.util.QualityPreset.entries.forEach { preset ->
+                                    QualityPresetButton(
+                                        label = preset.displayName,
+                                        isActive = qualityPreset == preset,
+                                        onClick = { onChangeQualityPreset(preset); showQualityPicker = false }
+                                    )
+                                }
+                            }
+                        }
+                        // FPS
+                        Surface(shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                availableFpsOptions.forEach { fps ->
+                                    FpsButton(fps = fps, isActive = streamFps == fps, onClick = { onChangeFps(fps); showQualityPicker = false })
+                                }
                             }
                         }
                     }
@@ -422,9 +421,9 @@ private fun FpsButton(fps: Int, isActive: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun QualityPresetButton(preset: com.reka.remoteplay.core.util.QualityPreset, isActive: Boolean, onClick: () -> Unit) {
-    Box(modifier = Modifier.defaultMinSize(minWidth = 36.dp).clickable(onClick = onClick).padding(horizontal = 4.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
-        Text(text = preset.label, color = if (isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.sp, fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal)
+private fun QualityPresetButton(label: String, isActive: Boolean, onClick: () -> Unit) {
+    Box(modifier = Modifier.defaultMinSize(minWidth = 42.dp).clickable(onClick = onClick).padding(horizontal = 6.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
+        Text(text = label, color = if (isActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.sp, fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal)
     }
 }
 

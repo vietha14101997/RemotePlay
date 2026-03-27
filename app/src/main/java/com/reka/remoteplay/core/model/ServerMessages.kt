@@ -10,7 +10,8 @@ data class HardwareInfoMessage(
     @Json(name = "type") val type: String = "hardware_info",
     @Json(name = "device") val device: DeviceInfo = DeviceInfo(),
     @Json(name = "encoder") val encoder: EncoderInfo = EncoderInfo(),
-    @Json(name = "monitors") val monitors: List<MonitorInfoDto> = emptyList()
+    @Json(name = "monitors") val monitors: List<MonitorInfoDto> = emptyList(),
+    @Json(name = "maxQualityHeight") val maxQualityHeight: Int = 1440
 )
 
 @JsonClass(generateAdapter = true)

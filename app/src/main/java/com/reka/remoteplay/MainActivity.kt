@@ -27,7 +27,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        volumeControlStream = AudioManager.STREAM_MUSIC
+        volumeControlStream = AudioManager.STREAM_VOICE_CALL
         setContent {
             RemotePlayTheme {
                 Surface(

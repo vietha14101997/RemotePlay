@@ -39,7 +39,6 @@ fun ConfigReviewScreen(
     connectionState: ConnectionState = ConnectionState.ConfiguringSettings,
     isPaused: Boolean = false,
     savedMonitors: Int = 1,
-    savedResolution: Int = 1080,
     savedFps: Int = 60,
     connectionType: String = "Unknown",
     bindMobileScreen: Boolean = false,
@@ -47,28 +46,16 @@ fun ConfigReviewScreen(
     qualityPreset: QualityPreset = QualityPreset.Quality,
     onBindMobileScreenChanged: (Boolean) -> Unit = {},
     onQualityPresetChanged: (QualityPreset) -> Unit = {},
-    onProceed: (monitors: Int, resolutionHeight: Int, fps: Int) -> Unit,
+    onProceed: (monitors: Int, fps: Int) -> Unit,
     onResume: () -> Unit = {},
     onBack: () -> Unit
 ) {
     val maxMonitors = serverInfo.monitors.size
-    val maxNativeHeight = suggestedConfig.maxNativeHeight
-    val availableResolutions = buildList {
-        add(720)
-        add(1080)
-        if (maxNativeHeight >= 1440) add(1440)
-        if (maxNativeHeight >= 2160) add(2160)
-    }
 
     // Use saved settings as defaults, clamped to server capabilities.
-    // Key on saved values so remember re-evaluates when DataStore loads.
     val maxSelectableMonitors = if (maxMonitors <= 3) 3 else maxMonitors
     var selectedMonitors by remember(savedMonitors, maxSelectableMonitors) {
         mutableIntStateOf(savedMonitors.coerceIn(1, maxSelectableMonitors))
-    }
-    var selectedResolution by remember(savedResolution) {
-        val clamped = if (savedResolution in availableResolutions) savedResolution else 1080
-        mutableIntStateOf(clamped)
     }
     val maxHz = if (bindMobileScreen) deviceScreenSpecs.refreshRate else suggestedConfig.refreshRate.toFloat()
     val availableFpsOptions = buildFpsOptions(maxHz)
@@ -194,57 +181,63 @@ fun ConfigReviewScreen(
                             color = AppTextQuaternary,
                             fontSize = 12.sp
                         )
-
-                        Spacer(modifier = Modifier.height(16.dp))
-
-                        // Quality Preset selector
-                        Text("Quality Preset", color = AppTextTertiary, fontSize = 13.sp)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            QualityPreset.entries.forEach { preset ->
-                                val isSelected = qualityPreset == preset
-                                Surface(
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = if (isSelected) AppAccent.copy(alpha = 0.2f) else Color.Transparent,
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .clickable(enabled = settingsEnabled) { onQualityPresetChanged(preset) }
-                                ) {
-                                    Text(
-                                        text = preset.displayName,
-                                        color = if (isSelected) AppAccent else AppTextTertiary,
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                        fontSize = 14.sp,
-                                        modifier = Modifier.padding(vertical = 10.dp),
-                                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                                    )
-                                }
-                            }
-                        }
-
-                        // Show computed encoder-aligned resolution
-                        val landscapeW = maxOf(deviceScreenSpecs.widthPx, deviceScreenSpecs.heightPx)
-                        val landscapeH = minOf(deviceScreenSpecs.widthPx, deviceScreenSpecs.heightPx)
-                        val (alignedW, alignedH) = EncoderResolutionCalculator.calculate(
-                            landscapeW, landscapeH, qualityPreset
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            "Encoder: ${alignedW} × ${alignedH}",
-                            color = AppTextQuaternary,
-                            fontSize = 12.sp
-                        )
                     }
 
                     Spacer(modifier = Modifier.height(16.dp))
 
+                    // Quality Preset selector (visible in both modes)
+                    Text("Quality Preset", color = AppTextTertiary, fontSize = 13.sp)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        QualityPreset.entries.forEach { preset ->
+                            val isSelected = qualityPreset == preset
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (isSelected) AppAccent.copy(alpha = 0.2f) else Color.Transparent,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable(enabled = settingsEnabled) { onQualityPresetChanged(preset) }
+                            ) {
+                                Text(
+                                    text = preset.displayName,
+                                    color = if (isSelected) AppAccent else AppTextTertiary,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                    fontSize = 14.sp,
+                                    modifier = Modifier.padding(vertical = 10.dp),
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                )
+                            }
+                        }
+                    }
+
+                    // Show encoder resolution preview
+                    val previewW: Int
+                    val previewH: Int
+                    if (bindMobileScreen) {
+                        val landscapeW = maxOf(deviceScreenSpecs.widthPx, deviceScreenSpecs.heightPx)
+                        val landscapeH = minOf(deviceScreenSpecs.widthPx, deviceScreenSpecs.heightPx)
+                        val (w, h) = EncoderResolutionCalculator.calculate(landscapeW, landscapeH, qualityPreset, serverInfo.maxQualityHeight)
+                        previewW = w; previewH = h
+                    } else {
+                        val sugW = suggestedConfig.resolution.width
+                        val sugH = suggestedConfig.resolution.height
+                        val (w, h) = EncoderResolutionCalculator.calculate(sugW, sugH, qualityPreset, serverInfo.maxQualityHeight)
+                        previewW = w; previewH = h
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        "Encoder: ${previewW} × ${previewH}",
+                        color = AppTextQuaternary,
+                        fontSize = 12.sp
+                    )
+
                     if (!bindMobileScreen) {
+                    Spacer(modifier = Modifier.height(16.dp))
+
                     // Monitor count
-                    // ≤3 monitors: show 1..n segmented buttons
-                    // >3 monitors: show all as pill chips (same style as FPS selector)
                     Text(stringResource(R.string.monitors_label), color = AppTextTertiary, fontSize = 13.sp)
                     Spacer(modifier = Modifier.height(4.dp))
                     if (maxSelectableMonitors <= 3) {
@@ -295,35 +288,7 @@ fun ConfigReviewScreen(
                             }
                         }
                     }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    // Resolution
-                    Text(stringResource(R.string.resolution), color = AppTextTertiary, fontSize = 13.sp)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                        availableResolutions.forEachIndexed { index, res ->
-                            SegmentedButton(
-                                selected = selectedResolution == res,
-                                onClick = { if (settingsEnabled) selectedResolution = res },
-                                enabled = settingsEnabled,
-                                shape = SegmentedButtonDefaults.itemShape(
-                                    index = index,
-                                    count = availableResolutions.size
-                                ),
-                                colors = SegmentedButtonDefaults.colors(
-                                    activeContainerColor = AppAccent.copy(alpha = 0.2f),
-                                    activeContentColor = AppAccent,
-                                    inactiveContainerColor = Color.Transparent,
-                                    inactiveContentColor = AppTextTertiary
-                                )
-                            ) {
-                                Text(stringResource(R.string.resolution_format, res))
-                            }
-                        }
-                    }
-
-                    } // end if (!bindMobileScreen) — monitors + resolution hidden
+                    } // end if (!bindMobileScreen) — monitors hidden
 
                     Spacer(modifier = Modifier.height(16.dp))
 
@@ -391,7 +356,7 @@ fun ConfigReviewScreen(
                     if (isPaused) {
                         onResume()
                     } else if (!isInProgress) {
-                        onProceed(selectedMonitors, selectedResolution, selectedFps)
+                        onProceed(selectedMonitors, selectedFps)
                     }
                 },
                 enabled = !isInProgress,
