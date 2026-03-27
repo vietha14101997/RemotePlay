@@ -1,4 +1,5 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import com.android.build.api.dsl.ApplicationExtension
 
 plugins {
     alias(libs.plugins.android.application)
@@ -9,7 +10,7 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
-android {
+extensions.configure<ApplicationExtension>("android") {
     namespace = "com.reka.remoteplay"
     compileSdk = 36
 
@@ -20,6 +21,10 @@ android {
         versionCode = 1
         versionName = "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
     }
 
     buildTypes {
@@ -85,7 +90,7 @@ dependencies {
     implementation(libs.navigation.compose)
 
     // WebRTC
-    implementation("io.getstream:stream-webrtc-android:1.3.1")
+    implementation(libs.stream.webrtc)
 
     // --- Networking & Serialization ---
     implementation(libs.okhttp)
@@ -99,14 +104,16 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
 
     // --- QR Code Scanner (ML Kit + CameraX) ---
-    implementation("com.google.mlkit:barcode-scanning:17.3.0")
-    implementation("androidx.camera:camera-core:1.4.0")
-    implementation("androidx.camera:camera-camera2:1.4.0")
-    implementation("androidx.camera:camera-lifecycle:1.4.0")
-    implementation("androidx.camera:camera-view:1.4.0")
+    implementation(libs.mlkit.barcode.scanning)
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
 
     // --- Testing ---
     testImplementation(libs.junit)
+    testImplementation(libs.mockk)
+    testImplementation(libs.kotlinx.coroutines.test)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))
