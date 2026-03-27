@@ -1,8 +1,10 @@
 package com.reka.remoteplay.feature.streaming.presentation
 
 import android.app.Application
+import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.reka.remoteplay.R
 import com.reka.remoteplay.core.model.PauseMonitorMessage
 import com.reka.remoteplay.core.model.PauseStreamingMessage
 import com.reka.remoteplay.core.model.ResumeMonitorMessage
@@ -12,12 +14,7 @@ import com.reka.remoteplay.core.network.MessageParser
 import com.reka.remoteplay.core.network.WebSocketClient
 import com.reka.remoteplay.feature.connection.domain.model.ConnectionState
 import com.reka.remoteplay.feature.connection.domain.repository.ConnectionStateRepository
-import com.reka.remoteplay.feature.streaming.data.remote.AudioPlayer
-import com.reka.remoteplay.feature.streaming.data.remote.CursorRenderer
-import com.reka.remoteplay.feature.streaming.data.remote.ExternalInputHandler
-import com.reka.remoteplay.feature.streaming.data.remote.PhaseTwoHandler
-import com.reka.remoteplay.feature.streaming.data.remote.VideoDecoderManager
-import com.reka.remoteplay.feature.streaming.data.remote.WebRtcManager
+import com.reka.remoteplay.feature.streaming.data.remote.*
 import com.reka.remoteplay.feature.streaming.domain.model.InputProtocol
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
@@ -28,7 +25,7 @@ import javax.inject.Inject
 
 @HiltViewModel
 class StreamingViewModel @Inject constructor(
-    application: Application,
+    private val application: Application,
     private val webRtcManager: WebRtcManager,
     val videoDecoderManager: VideoDecoderManager,
     private val connectionStateRepo: ConnectionStateRepository,
@@ -63,10 +60,8 @@ class StreamingViewModel @Inject constructor(
     private val _isMicEnabled = MutableStateFlow(false)
     val isMicEnabled: StateFlow<Boolean> = _isMicEnabled.asStateFlow()
 
-    // Text caret position from server (for keyboard side placement)
     private val _caretU = MutableStateFlow(0.5f)
 
-    // Tracks active double-tap-drag (for hiding cursor overlay during drag)
     private val _isDragging = MutableStateFlow(false)
     val isDragging: StateFlow<Boolean> = _isDragging.asStateFlow()
 
@@ -80,27 +75,33 @@ class StreamingViewModel @Inject constructor(
         if (streamingInitialized) return
         streamingInitialized = true
 
-        // Detect resume: VideoDecoderManager is @Singleton, survives ViewModel recreation.
-        // If it has cached codec configs, this is a resume (not first start).
         val isResume = videoDecoderManager.hasCachedCodecConfigs()
-
         val monitorList = monitors.value
         val fps = phaseTwoHandler.configuredFps.value
         val codec = phaseTwoHandler.configuredCodec.value
+        
         videoDecoderManager.initialize(monitorList.size, codec, fps)
         videoDecoderManager.startFrameCollection()
 
-        // Start audio playback (DataChannel path with Opus decode)
+        // UI Feedback for codec change
+        videoDecoderManager.onCodecChanged = { newCodec ->
+            viewModelScope.launch(Dispatchers.Main) {
+                Toast.makeText(
+                    application,
+                    application.getString(R.string.codec_changed, newCodec),
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+
         audioPlayer.startDataChannelAudio(viewModelScope)
 
-        // Collect cursor data from WebRTC
         viewModelScope.launch(Dispatchers.Default) {
             webRtcManager.cursorData.collect { data ->
                 cursorRenderer.handleCursorData(data)
             }
         }
 
-        // Listen for server messages (foreground monitor switch, caret position)
         viewModelScope.launch {
             webSocketClient.textMessages.collect { text ->
                 if (text.contains("foreground_monitor")) {
@@ -114,8 +115,6 @@ class StreamingViewModel @Inject constructor(
                         .find(text)?.groupValues?.getOrNull(1)
                     if (actual != null) {
                         videoDecoderManager.changeCodec(actual)
-                        // After decoder recreated with new codec, request fresh keyframe
-                        // by doing pause+resume on active monitor → server sends codec config + IDR
                         val activeIdx = videoDecoderManager.activeMonitor.value
                         webSocketClient.sendText(MessageParser.serialize(PauseMonitorMessage(monitorIndex = activeIdx)))
                         delay(50)
@@ -130,45 +129,32 @@ class StreamingViewModel @Inject constructor(
         }
 
         if (isResume) {
-            // Resume path: callbacks wired FIRST, then request keyframe from server.
-            // This avoids the race where server sends IDR before client is ready.
             val activeIdx = videoDecoderManager.activeMonitor.value
             viewModelScope.launch {
-                delay(200) // Let Surface + decoder setup complete
-
-                // Pause then resume active monitor → server sends codec config + IDR
+                delay(200)
                 webSocketClient.sendText(MessageParser.serialize(PauseMonitorMessage(monitorIndex = activeIdx)))
                 delay(100)
                 webSocketClient.sendText(MessageParser.serialize(ResumeMonitorMessage(monitorIndex = activeIdx)))
-
                 delay(200)
                 webRtcManager.sendInput(InputProtocol.encodeFocusMonitor(activeIdx))
                 sendWarpCursor(activeIdx, 0.5f, 0.5f)
-                nudgeMouse()
                 externalInputHandler.setEnabled(true)
             }
         } else {
-            // First start path: wait for ICE, send phase3 proceed
             viewModelScope.launch {
                 phaseTwoHandler.iceReady.first { it }
                 phaseTwoHandler.sendProceedPhase3()
                 phaseTwoHandler.sendStartStreaming()
 
-                // Pause all non-active monitors so resume_monitor will trigger IDR later
-                val monitorsValue = monitors.value
-                monitorsValue.forEachIndexed { index, _ ->
+                monitors.value.forEachIndexed { index, _ ->
                     if (index != 0) {
                         webSocketClient.sendText(MessageParser.serialize(PauseMonitorMessage(monitorIndex = index)))
                     }
                 }
 
-                // Confine cursor to active monitor, warp to center, nudge
                 delay(300)
                 webRtcManager.sendInput(InputProtocol.encodeFocusMonitor(0))
                 sendWarpCursor(0, 0.5f, 0.5f)
-                nudgeMouse()
-
-                // Enable external input devices (mouse/keyboard/gamepad)
                 externalInputHandler.setEnabled(true)
             }
         }
@@ -177,28 +163,14 @@ class StreamingViewModel @Inject constructor(
     fun switchMonitor(index: Int) {
         val current = activeMonitor.value
         if (current == index) return
-
-        // Capture current cursor position (normalized 0..1)
         val cursor = cursorRenderer.cursorState.value
-
-        // Swap decoder on persistent Surface (synchronous) FIRST
-        // This ensures decoder is ready before frames arrive.
         videoDecoderManager.switchMonitor(index)
-
-        // Pause old monitor
         webSocketClient.sendText(MessageParser.serialize(PauseMonitorMessage(monitorIndex = current)))
-
-        // Resume new monitor AFTER decoder is ready → server sends codec_config + IDR
-        // This avoids the race where codec_config arrives before decoder exists.
         webSocketClient.sendText(MessageParser.serialize(ResumeMonitorMessage(monitorIndex = index)))
-
-        // Confine cursor to new monitor + warp immediately (no wait for first frame)
         webRtcManager.sendInput(InputProtocol.encodeFocusMonitor(index))
         sendWarpCursor(index, cursor.u, cursor.v)
     }
 
-    /** Re-send cursor confinement for active monitor. Called after drag ends
-     *  because Windows drag operation overrides ClipCursor. */
     fun reConfineCursor() {
         val activeIdx = videoDecoderManager.activeMonitor.value
         webRtcManager.sendInput(InputProtocol.encodeFocusMonitor(activeIdx))
@@ -212,11 +184,6 @@ class StreamingViewModel @Inject constructor(
 
     fun toggleMic() {
         _isMicEnabled.value = !_isMicEnabled.value
-    }
-
-    private fun nudgeMouse() {
-        sendMouseMove(1, 0)
-        sendMouseMove(-1, 0)
     }
 
     fun toggleUI() {
@@ -244,13 +211,9 @@ class StreamingViewModel @Inject constructor(
     fun changeQualityPreset(preset: QualityPreset) {
         _qualityPreset.value = preset
         phaseTwoHandler.setQualityPreset(preset)
-
-        // Calculate new encoder-aligned resolution
         val screenW = phaseTwoHandler.screenWidth.value
         val screenH = phaseTwoHandler.screenHeight.value
         val (_, alignedH) = EncoderResolutionCalculator.calculate(screenW, screenH, preset)
-
-        // Send update_config with new resolution height
         val msg = com.reka.remoteplay.core.model.UpdateConfigMessage(resolutionHeight = alignedH)
         webSocketClient.sendText(MessageParser.serialize(msg))
     }
@@ -264,8 +227,6 @@ class StreamingViewModel @Inject constructor(
     fun sendKey(vk: Int, down: Boolean) {
         webRtcManager.sendInput(InputProtocol.encodeKey(vk.toShort(), down))
     }
-
-    // ===== Input Methods =====
 
     fun sendMouseMove(dx: Short, dy: Short) {
         webRtcManager.sendInput(InputProtocol.encodeMouseMove(dx, dy))
@@ -283,13 +244,12 @@ class StreamingViewModel @Inject constructor(
         webRtcManager.sendInput(InputProtocol.encodeWarpCursor(monitorIndex.toByte(), u, v))
     }
 
-    /** Pause streaming and go back to config screen (keep connection alive) */
     fun pauseAndGoBack() {
         externalInputHandler.setEnabled(false)
         audioPlayer.stop()
         webRtcManager.sendInput(InputProtocol.encodeReleaseCursorConfinement())
         webSocketClient.sendText(MessageParser.serialize(PauseStreamingMessage()))
-        videoDecoderManager.pauseForResume() // Keep codec configs for fast resume
+        videoDecoderManager.pauseForResume()
         streamingInitialized = false
         connectionStateRepo.forceTransition(ConnectionState.ConfiguringSettings)
     }
@@ -297,10 +257,10 @@ class StreamingViewModel @Inject constructor(
     override fun onCleared() {
         super.onCleared()
         audioPlayer.stop()
-        // If paused (has cached configs), pauseForResume() already cleaned up.
-        // Don't destroy codec configs needed for resume.
+        externalInputHandler.dispose()
         if (!videoDecoderManager.hasCachedCodecConfigs()) {
             videoDecoderManager.releaseAll()
+            webRtcManager.dispose()
         }
     }
 }

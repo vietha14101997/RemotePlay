@@ -54,6 +54,9 @@
     <string name="press_back_to_show_ui">Press back to show UI</string>
     <string name="ping_ms_format">%d ms</string>
     <string name="monitor_index_format">%d</string>
+    <string name="codec_changed">Codec changed to %s</string>
+    <string name="fps_label">FPS</string>
+    <string name="quality_label">Quality</string>
 
     <!-- PerformanceOverlay -->
     <string name="rtt_format">RTT: %dms</string>
