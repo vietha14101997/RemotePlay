@@ -40,16 +40,19 @@ fun ConfigReviewScreen(
     isPaused: Boolean = false,
     savedMonitors: Int = 1,
     savedFps: Int = 60,
+    savedWindowsScale: Int = 125,
     connectionType: String = "Unknown",
     bindMobileScreen: Boolean = false,
     deviceScreenSpecs: ScreenSpecs = ScreenSpecs(1920, 1080, 60f),
     qualityPreset: QualityPreset = QualityPreset.Quality,
+    webRtcConnectionType: String = "unknown",
     onBindMobileScreenChanged: (Boolean) -> Unit = {},
     onQualityPresetChanged: (QualityPreset) -> Unit = {},
-    onProceed: (monitors: Int, fps: Int) -> Unit,
+    onProceed: (monitors: Int, fps: Int, windowsScale: Int) -> Unit,
     onResume: () -> Unit = {},
     onBack: () -> Unit
 ) {
+    val isTurnRelay = webRtcConnectionType == "relay"
     val maxMonitors = serverInfo.monitors.size
 
     // Use saved settings as defaults, clamped to server capabilities.
@@ -61,6 +64,14 @@ fun ConfigReviewScreen(
     val availableFpsOptions = buildFpsOptions(maxHz)
     var selectedFps by remember(savedFps, availableFpsOptions) {
         mutableIntStateOf(if (savedFps in availableFpsOptions) savedFps else availableFpsOptions.lastOrNull { it <= 60 } ?: 60)
+    }
+    val scaleOptions = listOf(100, 125, 150)
+    var selectedScale by remember(savedWindowsScale) { mutableIntStateOf(savedWindowsScale) }
+
+    // TURN relay: limit FPS + force Performance preset to save VPS bandwidth
+    if (isTurnRelay) {
+        if (selectedFps > 30) selectedFps = 30
+        if (qualityPreset != QualityPreset.Performance) onQualityPresetChanged(QualityPreset.Performance)
     }
 
     val settingsEnabled = connectionState is ConnectionState.ConfiguringSettings && !isPaused
@@ -129,7 +140,8 @@ fun ConfigReviewScreen(
                 title = stringResource(R.string.network),
                 icon = Icons.Default.NetworkCheck,
                 items = buildList {
-                    add(stringResource(R.string.connection_label) to connectionType)
+                    val connLabel = if (isTurnRelay) "$connectionType (TURN Relay)" else "$connectionType (P2P Direct)"
+                    add(stringResource(R.string.connection_label) to connLabel)
                     if (networkInfo != null) {
                         add(stringResource(R.string.ping_label) to stringResource(R.string.ping_format, networkInfo.pingMs))
                         add(stringResource(R.string.bandwidth_label) to stringResource(R.string.bandwidth_format, networkInfo.bandwidthMbps))
@@ -137,6 +149,26 @@ fun ConfigReviewScreen(
                     }
                 }
             )
+
+            // TURN relay warning
+            if (isTurnRelay) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = AppRedBg)
+                ) {
+                    Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Warning, contentDescription = null, tint = AppYellow, modifier = Modifier.size(20.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "TURN Relay: P2P failed, streaming via server. Limited to 720p 30FPS to save bandwidth.",
+                            color = AppTextSecondary,
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+            }
 
             Spacer(modifier = Modifier.height(20.dp))
 
@@ -320,6 +352,36 @@ fun ConfigReviewScreen(
                         }
                     }
 
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Windows Scale
+                    Text("Windows Scale", color = AppTextTertiary, fontSize = 13.sp)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        scaleOptions.forEach { scale ->
+                            val isSelected = selectedScale == scale
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (isSelected) AppAccent.copy(alpha = 0.2f) else Color.Transparent,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable(enabled = settingsEnabled) { selectedScale = scale }
+                            ) {
+                                Text(
+                                    text = "$scale%",
+                                    color = if (isSelected) AppAccent else AppTextTertiary,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                    fontSize = 14.sp,
+                                    modifier = Modifier.padding(vertical = 10.dp),
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                )
+                            }
+                        }
+                    }
+
                     Spacer(modifier = Modifier.height(8.dp))
 
                     // Bitrate info (read-only)
@@ -356,7 +418,7 @@ fun ConfigReviewScreen(
                     if (isPaused) {
                         onResume()
                     } else if (!isInProgress) {
-                        onProceed(selectedMonitors, selectedFps)
+                        onProceed(selectedMonitors, selectedFps, selectedScale)
                     }
                 },
                 enabled = !isInProgress,

@@ -11,6 +11,7 @@ object InputProtocol {
     const val TAG_TEXT: Byte = 0x05          // 3+N bytes: [tag][len:u16][UTF8]
     const val TAG_WARP_CURSOR: Byte = 0x06   // 10 bytes: [tag][monIdx:1][u:f32][v:f32]
     const val TAG_FOCUS_MONITOR: Byte = 0x08 // 2 bytes: [tag][monIdx:1] — confine cursor, 0xFF = release
+    const val TAG_PING: Byte = 0x09          // 9 bytes: [tag][timestamp:i64] — P2P RTT measurement
 
     fun encodeMouseMove(dx: Short, dy: Short): ByteArray {
         return ByteBuffer.allocate(5).order(ByteOrder.LITTLE_ENDIAN)
@@ -64,6 +65,13 @@ object InputProtocol {
 
     fun encodeReleaseCursorConfinement(): ByteArray {
         return byteArrayOf(TAG_FOCUS_MONITOR, 0xFF.toByte())
+    }
+
+    fun encodePing(): ByteArray {
+        return ByteBuffer.allocate(9).order(ByteOrder.LITTLE_ENDIAN)
+            .put(TAG_PING)
+            .putLong(System.currentTimeMillis())
+            .array()
     }
 
     const val TAG_GAMEPAD: Byte = 0x07 // 13 bytes: [tag][buttons:u16][LT:u8][RT:u8][LX:i16][LY:i16][RX:i16][RY:i16]

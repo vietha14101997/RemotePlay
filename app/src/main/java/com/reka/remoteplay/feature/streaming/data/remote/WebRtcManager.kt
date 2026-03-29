@@ -3,10 +3,14 @@ package com.reka.remoteplay.feature.streaming.data.remote
 import android.content.Context
 import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import com.reka.remoteplay.core.network.relay.IceServerConfig
 import org.webrtc.*
 import java.nio.ByteBuffer
 import javax.inject.Inject
@@ -17,6 +21,12 @@ class WebRtcManager @Inject constructor(
     @param:ApplicationContext private val context: Context
 ) {
     private var factory: PeerConnectionFactory? = null
+    // STUN only by default — enables P2P across different networks without TURN bandwidth cost.
+    // TURN servers can be added via setIceServers() when needed (4G fallback).
+    private var iceServers: List<PeerConnection.IceServer> = listOf(
+        PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
+        PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer()
+    )
 
     // Main PC (audio + control DataChannels)
     private var mainPc: PeerConnection? = null
@@ -39,6 +49,14 @@ class WebRtcManager @Inject constructor(
         replay = 0, extraBufferCapacity = 8, onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
     val audioData: SharedFlow<ByteArray> = _audioData.asSharedFlow()
+
+    // P2P RTT measurement via DataChannel ping/pong
+    private val _p2pRttMs = MutableStateFlow(0f)
+    val p2pRttMs: StateFlow<Float> = _p2pRttMs
+
+    // Connection type detection: "host" (LAN), "srflx" (P2P via STUN), "relay" (TURN fallback)
+    private val _connectionType = MutableStateFlow("unknown")
+    val connectionType: StateFlow<String> = _connectionType
 
     // ICE candidate callbacks (to send via WebSocket)
     var onMainIceCandidate: ((IceCandidate) -> Unit)? = null
@@ -63,8 +81,22 @@ class WebRtcManager @Inject constructor(
         Log.d(TAG, "PeerConnectionFactory initialized")
     }
 
+    /**
+     * Update ICE servers from relay API response for TURN/STUN support.
+     * Must be called before creating any PeerConnection.
+     */
+    fun setIceServers(servers: List<IceServerConfig>) {
+        iceServers = servers.map { config ->
+            val builder = PeerConnection.IceServer.builder(config.urls)
+            if (config.username != null) builder.setUsername(config.username)
+            if (config.credential != null) builder.setPassword(config.credential)
+            builder.createIceServer()
+        }
+        Log.d(TAG, "ICE servers updated: ${iceServers.size} server(s)")
+    }
+
     private fun buildRtcConfig(): PeerConnection.RTCConfiguration {
-        return PeerConnection.RTCConfiguration(emptyList()).apply {
+        return PeerConnection.RTCConfiguration(iceServers).apply {
             bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
             rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
@@ -92,6 +124,9 @@ class WebRtcManager @Inject constructor(
 
             override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) {
                 Log.d(TAG, "Main PC ICE state: $state")
+                if (state == PeerConnection.IceConnectionState.CONNECTED) {
+                    detectConnectionType()
+                }
             }
 
             override fun onDataChannel(dc: DataChannel) {
@@ -117,7 +152,17 @@ class WebRtcManager @Inject constructor(
 
         val cursorInit = DataChannel.Init().apply { ordered = true }
         val cursorDc = mainPc?.createDataChannel("cursor", cursorInit)
-        cursorDc?.let { wireDataChannel(it) { data -> _cursorData.tryEmit(data) } }
+        cursorDc?.let { wireDataChannel(it) { data ->
+            // Check if this is a ping echo (tag 0x09)
+            if (data.size >= 9 && data[0] == 0x09.toByte()) {
+                val ts = java.nio.ByteBuffer.wrap(data, 1, 8)
+                    .order(java.nio.ByteOrder.LITTLE_ENDIAN).long
+                val rtt = System.currentTimeMillis() - ts
+                _p2pRttMs.value = rtt.toFloat()
+            } else {
+                _cursorData.tryEmit(data)
+            }
+        } }
 
         val audioInit = DataChannel.Init().apply { ordered = true }
         val audioDc = mainPc?.createDataChannel("audio", audioInit)
@@ -211,6 +256,56 @@ class WebRtcManager @Inject constructor(
 
     fun addVideoIceCandidate(monitorIndex: Int, sdpMid: String?, sdpMLineIndex: Int, candidate: String) {
         videoPcs[monitorIndex]?.addIceCandidate(IceCandidate(sdpMid ?: "", sdpMLineIndex, candidate))
+    }
+
+    // ==================== Connection Type Detection ====================
+
+    private fun detectConnectionType() {
+        mainPc?.getStats { report ->
+            for (stats in report.statsMap.values) {
+                if (stats.type == "candidate-pair" && stats.members.containsKey("nominated")) {
+                    val nominated = stats.members["nominated"] as? Boolean ?: false
+                    if (!nominated) continue
+
+                    val localCandidateId = stats.members["localCandidateId"] as? String ?: continue
+
+                    // Find the local candidate to check its type
+                    for (candStats in report.statsMap.values) {
+                        if (candStats.id == localCandidateId) {
+                            val candidateType = candStats.members["candidateType"] as? String ?: "unknown"
+                            _connectionType.value = candidateType
+                            Log.i(TAG, "Connection type: $candidateType (${if (candidateType == "relay") "TURN" else "P2P"})")
+                            return@getStats
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /** true if connected via TURN relay (not P2P) */
+    val isRelayConnection: Boolean get() = _connectionType.value == "relay"
+
+    // ==================== P2P Ping ====================
+
+    private var pingJob: Job? = null
+
+    fun startPingLoop(scope: CoroutineScope) {
+        pingJob?.cancel()
+        pingJob = scope.launch(Dispatchers.IO) {
+            while (isActive) {
+                delay(3000)
+                val dc = inputDc ?: continue
+                if (dc.state() != DataChannel.State.OPEN) continue
+                val ping = com.reka.remoteplay.feature.streaming.domain.model.InputProtocol.encodePing()
+                dc.send(DataChannel.Buffer(ByteBuffer.wrap(ping), true))
+            }
+        }
+    }
+
+    fun stopPingLoop() {
+        pingJob?.cancel()
+        pingJob = null
     }
 
     // ==================== Input ====================

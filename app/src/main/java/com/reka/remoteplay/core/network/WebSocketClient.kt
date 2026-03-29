@@ -82,6 +82,40 @@ class WebSocketClient @Inject constructor() {
         connectWithUrl(url)
     }
 
+    /**
+     * Connect via relay server for internet remote sessions.
+     * Uses WSS + JWT token for authentication.
+     */
+    fun connectRelay(relayUrl: String, sessionId: String, token: String) {
+        val baseUrl = relayUrl.trimEnd('/')
+            .replace("https://", "wss://")
+            .replace("http://", "ws://")
+        val url = "$baseUrl/ws/client?session=$sessionId&token=$token"
+        connectWithUrl(url)
+    }
+
+    /**
+     * Connect via relay for guest session (no JWT token needed).
+     */
+    fun connectGuestRelay(relayUrl: String, sessionId: String) {
+        val baseUrl = relayUrl.trimEnd('/')
+            .replace("https://", "wss://")
+            .replace("http://", "ws://")
+        val url = "$baseUrl/ws/guest?session=$sessionId"
+        connectWithUrl(url)
+    }
+
+    /**
+     * Connect to room via relay server.
+     */
+    fun connectRoom(relayUrl: String, roomId: String, clientId: String) {
+        val baseUrl = relayUrl.trimEnd('/')
+            .replace("https://", "wss://")
+            .replace("http://", "ws://")
+        val url = "$baseUrl/ws/room?room_id=$roomId&client_id=$clientId"
+        connectWithUrl(url)
+    }
+
     private fun connectWithUrl(url: String) {
         pingJob?.cancel()
         pingJob = null

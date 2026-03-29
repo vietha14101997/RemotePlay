@@ -45,7 +45,8 @@ data class DisplayConfigMessage(
     @Json(name = "fps") val fps: Int = 60,
     @Json(name = "preferGpu") val preferGpu: String? = null,
     @Json(name = "monitorType") val monitorType: String = "standard",
-    @Json(name = "isUsbMode") val isUsbMode: Boolean = false
+    @Json(name = "isUsbMode") val isUsbMode: Boolean = false,
+    @Json(name = "windowsScale") val windowsScale: Int = 125
 )
 
 // ==================== Phase 3: Client -> Server ====================

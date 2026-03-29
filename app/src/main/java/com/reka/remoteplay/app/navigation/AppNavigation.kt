@@ -4,6 +4,7 @@ import androidx.compose.runtime.Composable
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import com.reka.remoteplay.feature.auth.presentation.LoginRoute
 import com.reka.remoteplay.feature.connection.presentation.ConfigReviewRoute
 import com.reka.remoteplay.feature.connection.presentation.ConnectionRoute
 import com.reka.remoteplay.feature.streaming.presentation.StreamingRoute
@@ -12,8 +13,23 @@ import com.reka.remoteplay.feature.streaming.presentation.StreamingRoute
 fun AppNavHost(navController: NavHostController) {
     NavHost(
         navController = navController,
-        startDestination = AppDestination.Connection.route
+        startDestination = AppDestination.Login.route
     ) {
+        composable(AppDestination.Login.route) {
+            LoginRoute(
+                onLoginSuccess = {
+                    navController.navigate(AppDestination.Connection.route) {
+                        popUpTo(AppDestination.Login.route) { inclusive = true }
+                    }
+                },
+                onSkip = {
+                    navController.navigate(AppDestination.Connection.route) {
+                        popUpTo(AppDestination.Login.route) { inclusive = true }
+                    }
+                }
+            )
+        }
+
         composable(AppDestination.Connection.route) {
             ConnectionRoute(
                 onNavigateToConfigReview = {

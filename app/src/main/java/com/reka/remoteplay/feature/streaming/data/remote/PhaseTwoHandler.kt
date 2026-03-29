@@ -25,6 +25,9 @@ class PhaseTwoHandler @Inject constructor(
     private val _iceReady = MutableStateFlow(false)
     val iceReady: StateFlow<Boolean> = _iceReady.asStateFlow()
 
+    /** WebRTC connection type: "host" (LAN), "srflx" (P2P), "relay" (TURN) */
+    val webRtcConnectionType: StateFlow<String> = webRtcManager.connectionType
+
     private val _configuredFps = MutableStateFlow(60)
     val configuredFps: StateFlow<Int> = _configuredFps.asStateFlow()
 

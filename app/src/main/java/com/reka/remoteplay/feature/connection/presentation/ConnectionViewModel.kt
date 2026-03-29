@@ -20,6 +20,7 @@ import com.reka.remoteplay.feature.connection.data.local.SavedServer
 import com.reka.remoteplay.feature.connection.data.remote.PhaseOneHandler
 import com.reka.remoteplay.feature.connection.data.remote.ServerDiscoveryService
 import com.reka.remoteplay.feature.connection.domain.model.ConnectionState
+import com.reka.remoteplay.feature.connection.data.GuestConnectionRepository
 import com.reka.remoteplay.feature.connection.domain.repository.ConnectionStateRepository
 import com.reka.remoteplay.feature.streaming.data.remote.AudioPlayer
 import com.reka.remoteplay.feature.streaming.data.remote.PhaseTwoHandler
@@ -40,7 +41,9 @@ class ConnectionViewModel @Inject constructor(
     private val phaseTwoHandler: PhaseTwoHandler,
     private val serverDiscoveryService: ServerDiscoveryService,
     private val videoDecoderManager: VideoDecoderManager,
-    private val audioPlayer: AudioPlayer
+    private val audioPlayer: AudioPlayer,
+    private val guestConnectionRepository: GuestConnectionRepository,
+    private val webRtcManager: com.reka.remoteplay.feature.streaming.data.remote.WebRtcManager
 ) : AndroidViewModel(application) {
 
     val connectionState = connectionStateRepo.state
@@ -57,6 +60,7 @@ class ConnectionViewModel @Inject constructor(
 
     // Phase 2 data
     val monitors = phaseTwoHandler.monitors
+    val webRtcConnectionType = phaseTwoHandler.webRtcConnectionType
 
     // Saved stream settings
     val savedMonitors = preferences.streamMonitors
@@ -65,6 +69,8 @@ class ConnectionViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.Eagerly, 1080)
     val savedFps = preferences.streamFps
         .stateIn(viewModelScope, SharingStarted.Eagerly, 60)
+    val savedWindowsScale = preferences.windowsScale
+        .stateIn(viewModelScope, SharingStarted.Eagerly, 125)
     val bindMobileScreen = preferences.bindMobileScreen
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
@@ -89,6 +95,49 @@ class ConnectionViewModel @Inject constructor(
 
     private val _hostInput = MutableStateFlow("")
     private val _portInput = MutableStateFlow("8288")
+
+    // Guest connect state
+    private val _guestDeviceId = MutableStateFlow("")
+    val guestDeviceId: StateFlow<String> = _guestDeviceId.asStateFlow()
+    private val _guestPassword = MutableStateFlow("")
+    val guestPassword: StateFlow<String> = _guestPassword.asStateFlow()
+    private val _guestError = MutableStateFlow<String?>(null)
+    val guestError: StateFlow<String?> = _guestError.asStateFlow()
+    private val _guestConnecting = MutableStateFlow(false)
+    val guestConnecting: StateFlow<Boolean> = _guestConnecting.asStateFlow()
+
+    fun onGuestDeviceIdChange(id: String) { _guestDeviceId.value = id; _guestError.value = null }
+    fun onGuestPasswordChange(pw: String) { _guestPassword.value = pw; _guestError.value = null }
+
+    fun connectAsGuest() {
+        val id = _guestDeviceId.value.trim()
+        val pw = _guestPassword.value.trim()
+        if (id.isBlank() || pw.isBlank()) return
+
+        viewModelScope.launch {
+            _guestConnecting.value = true
+            _guestError.value = null
+
+            guestConnectionRepository.joinRoom(id, pw).fold(
+                onSuccess = { roomInfo ->
+                    phaseOneHandler.reset()
+                    phaseTwoHandler.reset()
+                    connectionStateRepo.tryTransition(ConnectionState.Connecting)
+
+                    val dm = getApplication<Application>().resources.displayMetrics
+                    phaseOneHandler.startListening(viewModelScope, dm)
+
+                    val relayUrl = guestConnectionRepository.getRelayUrl()
+                    webSocketClient.connectRoom(relayUrl, roomInfo.roomId, roomInfo.clientId)
+                    _guestConnecting.value = false
+                },
+                onFailure = { e ->
+                    _guestError.value = e.message
+                    _guestConnecting.value = false
+                }
+            )
+        }
+    }
 
     init {
         viewModelScope.launch {
@@ -211,7 +260,7 @@ class ConnectionViewModel @Inject constructor(
         stopScan()
     }
 
-    fun proceed(monitors: Int, fps: Int) {
+    fun proceed(monitors: Int, fps: Int, windowsScale: Int = 125) {
         val config = suggestedConfig.value ?: return
         val preset = qualityPreset.value
 
@@ -238,7 +287,8 @@ class ConnectionViewModel @Inject constructor(
                 bitrateKbps = config.bitrateKbps,
                 fps = streamFps,
                 monitorType = "bind_mobile",
-                isUsbMode = false
+                isUsbMode = false,
+                windowsScale = windowsScale
             )
 
             phaseTwoHandler.setScreenDimensions(landscapeW, landscapeH)
@@ -260,7 +310,8 @@ class ConnectionViewModel @Inject constructor(
                 bitrateKbps = config.bitrateKbps,
                 fps = fps,
                 monitorType = "standard",
-                isUsbMode = false
+                isUsbMode = false,
+                windowsScale = windowsScale
             )
 
             phaseTwoHandler.setScreenDimensions(sugW, sugH)
@@ -269,7 +320,7 @@ class ConnectionViewModel @Inject constructor(
 
         // Save settings
         viewModelScope.launch {
-            preferences.saveStreamSettings(monitors, fps)
+            preferences.saveStreamSettings(monitors, fps, windowsScale)
         }
 
         // Compute and store available FPS options for streaming screen dynamic adjustment

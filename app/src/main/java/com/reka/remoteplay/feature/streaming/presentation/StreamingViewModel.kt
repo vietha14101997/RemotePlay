@@ -40,7 +40,7 @@ class StreamingViewModel @Inject constructor(
     val monitors = phaseTwoHandler.monitors
     val activeMonitor = videoDecoderManager.activeMonitor
     val firstFrameReceived = videoDecoderManager.firstFrameReceived
-    val rttMs = webSocketClient.rttMs
+    val rttMs = webRtcManager.p2pRttMs
     val cursorState = cursorRenderer.cursorState
     val cursorImage = cursorRenderer.cursorImage
 
@@ -92,6 +92,9 @@ class StreamingViewModel @Inject constructor(
         
         videoDecoderManager.initialize(monitorList.size, codec, fps)
         videoDecoderManager.startFrameCollection()
+
+        // Start P2P ping measurement via DataChannel
+        webRtcManager.startPingLoop(viewModelScope)
 
         // Signal server when decoder is ready so it re-sends codec config + IDR
         videoDecoderManager.onDecoderReady = { monitorIndex ->
@@ -277,6 +280,7 @@ class StreamingViewModel @Inject constructor(
         super.onCleared()
         audioPlayer.stop()
         externalInputHandler.dispose()
+        webRtcManager.stopPingLoop()
         if (!videoDecoderManager.hasCachedCodecConfigs()) {
             videoDecoderManager.releaseAll()
             webRtcManager.dispose()

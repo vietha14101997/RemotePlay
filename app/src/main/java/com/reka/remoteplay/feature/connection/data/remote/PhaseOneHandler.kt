@@ -75,26 +75,9 @@ class PhaseOneHandler @Inject constructor(
                     perTrackPc = true
                 )
                 webSocketClient.sendText(MessageParser.serialize(ack))
-                
-                connectionStateRepo.tryTransition(ConnectionState.SpeedTesting)
 
-                speedTestJob?.cancel()
-                speedTestJob = listeningScope?.launch {
-                    try {
-                        speedTestClient.runSpeedTest()
-                        connectionStateRepo.tryTransition(ConnectionState.AwaitingNetworkInfo)
-                        connectionStateRepo.tryTransition(ConnectionState.AwaitingSuggestedConfig)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Speed test failed: ${e.message}")
-                        connectionStateRepo.forceTransition(
-                            ConnectionState.Error("Speed test failed: ${e.message}", phase = 1)
-                        )
-                    }
-                }
-            }
-
-            "speedtest_end" -> {
-                speedTestClient.handleSpeedTestEnd()
+                // Speed test removed — wait directly for suggested_config
+                connectionStateRepo.tryTransition(ConnectionState.AwaitingSuggestedConfig)
             }
 
             "suggested_config" -> {

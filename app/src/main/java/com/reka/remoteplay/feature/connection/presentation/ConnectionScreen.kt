@@ -19,6 +19,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import com.reka.remoteplay.R
 import com.reka.remoteplay.feature.connection.data.local.SavedServer
 import com.reka.remoteplay.feature.connection.data.remote.ServerDiscoveryService
@@ -39,7 +41,14 @@ fun ConnectionScreen(
     onConnectToServer: (SavedServer) -> Unit,
     onConnectToDiscovered: (ServerDiscoveryService.DiscoveredServer) -> Unit,
     onRemoveServer: (SavedServer) -> Unit,
-    onScanQr: () -> Unit = {}
+    onScanQr: () -> Unit = {},
+    guestDeviceId: String = "",
+    guestPassword: String = "",
+    guestError: String? = null,
+    guestConnecting: Boolean = false,
+    onGuestDeviceIdChange: (String) -> Unit = {},
+    onGuestPasswordChange: (String) -> Unit = {},
+    onGuestConnect: () -> Unit = {}
 ) {
     val isBusy = connectionState.isConnected
 
@@ -227,6 +236,99 @@ fun ConnectionScreen(
             }
 
             Spacer(modifier = Modifier.height(24.dp))
+
+            // Connect by ID (UltraViewer-style)
+            if (!isBusy) {
+                Text(
+                    text = "CONNECT BY ID",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = AppTextTertiary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp)
+                )
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = AppSurface)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = guestDeviceId,
+                                onValueChange = { if (it.length <= 9) onGuestDeviceIdChange(it.uppercase()) },
+                                label = { Text("Room ID") },
+                                placeholder = { Text("XXX-XXX") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = AppAccent,
+                                    unfocusedBorderColor = AppBorder,
+                                    focusedLabelColor = AppAccent,
+                                    unfocusedLabelColor = AppTextTertiary,
+                                    cursorColor = AppAccent
+                                )
+                            )
+                            OutlinedTextField(
+                                value = guestPassword,
+                                onValueChange = { if (it.length <= 6) onGuestPasswordChange(it) },
+                                label = { Text("Password") },
+                                placeholder = { Text("######") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f),
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = AppAccent,
+                                    unfocusedBorderColor = AppBorder,
+                                    focusedLabelColor = AppAccent,
+                                    unfocusedLabelColor = AppTextTertiary,
+                                    cursorColor = AppAccent
+                                )
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Button(
+                            onClick = onGuestConnect,
+                            enabled = guestDeviceId.isNotBlank() && guestPassword.isNotBlank() && !guestConnecting,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(44.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = AppGreen)
+                        ) {
+                            if (guestConnecting) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    color = AppTextPrimary,
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Icon(Icons.Default.Link, contentDescription = null)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Connect", fontWeight = FontWeight.SemiBold)
+                            }
+                        }
+
+                        if (guestError != null) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = guestError,
+                                color = AppRedLight,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(24.dp))
+            }
 
             // Recent connections
             if (savedServers.isNotEmpty()) {
