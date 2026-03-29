@@ -32,7 +32,8 @@ class GuestConnectionRepository @Inject constructor(
     suspend fun joinRoom(roomId: String, password: String): Result<RoomJoinResponse> {
         return try {
             val normalizedId = roomId.replace("-", "").replace(" ", "").uppercase()
-            val resp = relayApi.joinRoom(RoomJoinRequest(normalizedId, password))
+            val authHeader = if (tokenManager.isLoggedIn.value) tokenManager.authHeader() else ""
+            val resp = relayApi.joinRoom(RoomJoinRequest(normalizedId, password), authHeader)
             if (resp.isSuccessful && resp.body() != null) {
                 Result.success(resp.body()!!)
             } else {

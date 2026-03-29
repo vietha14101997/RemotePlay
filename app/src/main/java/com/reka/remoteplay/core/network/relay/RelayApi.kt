@@ -35,5 +35,8 @@ interface RelayApi {
     suspend fun getIceServersPublic(): Response<IceServersResponse>
 
     @POST("rooms/join")
-    suspend fun joinRoom(@Body request: RoomJoinRequest): Response<RoomJoinResponse>
+    suspend fun joinRoom(
+        @Body request: RoomJoinRequest,
+        @Header("Authorization") token: String = ""
+    ): Response<RoomJoinResponse>
 }

@@ -12,14 +12,26 @@ fun ConnectionRoute(
 ) {
     val connectionState by viewModel.connectionState.collectAsState()
 
+    val isViewerMode by viewModel.isViewerMode.collectAsState()
+
     // Auto-navigate based on connection state
     var navigated by remember { mutableStateOf(false) }
-    LaunchedEffect(connectionState) {
+    LaunchedEffect(connectionState, isViewerMode) {
         when (connectionState) {
             is ConnectionState.ConfiguringSettings -> {
-                if (!navigated) {
+                if (!navigated && !isViewerMode) {
                     navigated = true
                     onNavigateToConfigReview()
+                }
+                // Viewer: don't navigate to config, wait for streaming state
+            }
+            is ConnectionState.ReadyToStream,
+            is ConnectionState.StartingStream,
+            is ConnectionState.Streaming -> {
+                // Viewer: auto-navigate to streaming (skip config review)
+                if (!navigated && isViewerMode) {
+                    navigated = true
+                    onNavigateToConfigReview() // ConfigReviewRoute handles streaming navigation
                 }
             }
             is ConnectionState.Disconnected, is ConnectionState.Error -> {
@@ -32,6 +44,8 @@ fun ConnectionRoute(
     val savedServers by viewModel.savedServers.collectAsState(initial = emptyList())
     val discoveredServers by viewModel.discoveredServers.collectAsState()
     val isScanning by viewModel.isScanning.collectAsState()
+    val relayDevices by viewModel.relayDevices.collectAsState()
+    val isLoggedIn by viewModel.isLoggedIn.collectAsState()
     val guestDeviceId by viewModel.guestDeviceId.collectAsState()
     val guestPassword by viewModel.guestPassword.collectAsState()
     val guestError by viewModel.guestError.collectAsState()
@@ -61,6 +75,9 @@ fun ConnectionRoute(
             onConnectToDiscovered = viewModel::connectToDiscovered,
             onRemoveServer = viewModel::removeServer,
             onScanQr = { showQrScanner = true },
+            relayDevices = relayDevices,
+            isLoggedIn = isLoggedIn,
+            onConnectToRelayDevice = viewModel::connectToRelayDevice,
             guestDeviceId = guestDeviceId,
             guestPassword = guestPassword,
             guestError = guestError,

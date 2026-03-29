@@ -47,6 +47,16 @@ class StreamingViewModel @Inject constructor(
     private val _showUI = MutableStateFlow(false)
     val showUI: StateFlow<Boolean> = _showUI.asStateFlow()
 
+    // Viewer quality preset — controls server-side frame skip
+    private val _viewerQuality = MutableStateFlow("high") // "high", "medium", "low"
+    val viewerQuality: StateFlow<String> = _viewerQuality.asStateFlow()
+
+    fun setViewerQuality(quality: String) {
+        _viewerQuality.value = quality
+        // Send to server via WS
+        webSocketClient.sendText("{\"type\":\"set_quality\",\"quality\":\"$quality\"}")
+    }
+
     private val _streamFps = MutableStateFlow(phaseTwoHandler.configuredFps.value)
     val streamFps: StateFlow<Int> = _streamFps.asStateFlow()
     val availableFpsOptions = phaseTwoHandler.availableFpsOptions

@@ -88,6 +88,9 @@ fun StreamingScreen(
     qualityPreset: com.reka.remoteplay.core.util.QualityPreset = com.reka.remoteplay.core.util.QualityPreset.Quality,
     qualityPresetHeights: Map<com.reka.remoteplay.core.util.QualityPreset, Int> = emptyMap(),
     onChangeQualityPreset: (com.reka.remoteplay.core.util.QualityPreset) -> Unit = {},
+    isViewerMode: Boolean = false,
+    viewerQuality: String = "high",
+    onChangeViewerQuality: (String) -> Unit = {},
     onSurfaceCreated: (Surface) -> Unit,
     onSurfaceDestroyed: () -> Unit
 ) {
@@ -391,8 +394,8 @@ fun StreamingScreen(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        // Quality presets
-                        Surface(shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)) {
+                        // Quality presets (viewer: read-only, host: interactive)
+                        Surface(shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = if (isViewerMode) 0.5f else 0.9f)) {
                             Row(
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                                 horizontalArrangement = Arrangement.spacedBy(2.dp),
@@ -402,20 +405,24 @@ fun StreamingScreen(
                                     QualityPresetButton(
                                         label = preset.displayName,
                                         isActive = qualityPreset == preset,
-                                        onClick = { onChangeQualityPreset(preset); showQualityPicker = false }
+                                        onClick = { if (!isViewerMode) { onChangeQualityPreset(preset); showQualityPicker = false } }
                                     )
                                 }
                             }
                         }
-                        // FPS
-                        Surface(shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)) {
+                        // FPS (viewer: read-only, host: interactive)
+                        Surface(shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = if (isViewerMode) 0.5f else 0.9f)) {
                             Row(
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                                 horizontalArrangement = Arrangement.spacedBy(2.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 availableFpsOptions.forEach { fps ->
-                                    FpsButton(fps = fps, isActive = streamFps == fps, onClick = { onChangeFps(fps); showQualityPicker = false })
+                                    FpsButton(
+                                        fps = fps,
+                                        isActive = streamFps == fps,
+                                        onClick = { if (!isViewerMode) { onChangeFps(fps); showQualityPicker = false } }
+                                    )
                                 }
                             }
                         }

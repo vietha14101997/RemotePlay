@@ -15,9 +15,12 @@ import com.reka.remoteplay.core.util.QualityPreset
 import com.reka.remoteplay.core.util.ScreenSpecDetector
 import com.reka.remoteplay.core.network.WebSocketClient
 import com.reka.remoteplay.core.network.WsConnectionState
+import com.reka.remoteplay.core.network.relay.RelayDevice
+import com.reka.remoteplay.core.network.relay.TokenManager
 import com.reka.remoteplay.feature.connection.data.local.ConnectionPreferences
 import com.reka.remoteplay.feature.connection.data.local.SavedServer
 import com.reka.remoteplay.feature.connection.data.remote.PhaseOneHandler
+import com.reka.remoteplay.feature.connection.data.remote.RelayDiscoveryService
 import com.reka.remoteplay.feature.connection.data.remote.ServerDiscoveryService
 import com.reka.remoteplay.feature.connection.domain.model.ConnectionState
 import com.reka.remoteplay.feature.connection.data.GuestConnectionRepository
@@ -40,6 +43,8 @@ class ConnectionViewModel @Inject constructor(
     private val phaseOneHandler: PhaseOneHandler,
     private val phaseTwoHandler: PhaseTwoHandler,
     private val serverDiscoveryService: ServerDiscoveryService,
+    private val relayDiscoveryService: RelayDiscoveryService,
+    private val tokenManager: TokenManager,
     private val videoDecoderManager: VideoDecoderManager,
     private val audioPlayer: AudioPlayer,
     private val guestConnectionRepository: GuestConnectionRepository,
@@ -53,6 +58,11 @@ class ConnectionViewModel @Inject constructor(
     val discoveredServers = serverDiscoveryService.servers
     private val _isScanning = MutableStateFlow(false)
     val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
+
+    // Relay devices (same-account, auto-discovery)
+    val isLoggedIn: StateFlow<Boolean> = tokenManager.isLoggedIn
+    private val _relayDevices = MutableStateFlow<List<RelayDevice>>(emptyList())
+    val relayDevices: StateFlow<List<RelayDevice>> = _relayDevices.asStateFlow()
 
     // Phase 1 data
     val serverInfo = phaseOneHandler.serverInfo
@@ -106,6 +116,10 @@ class ConnectionViewModel @Inject constructor(
     private val _guestConnecting = MutableStateFlow(false)
     val guestConnecting: StateFlow<Boolean> = _guestConnecting.asStateFlow()
 
+    // Viewer mode: skip config screen, go straight to streaming
+    private val _isViewerMode = MutableStateFlow(false)
+    val isViewerMode: StateFlow<Boolean> = _isViewerMode.asStateFlow()
+
     fun onGuestDeviceIdChange(id: String) { _guestDeviceId.value = id; _guestError.value = null }
     fun onGuestPasswordChange(pw: String) { _guestPassword.value = pw; _guestError.value = null }
 
@@ -120,12 +134,23 @@ class ConnectionViewModel @Inject constructor(
 
             guestConnectionRepository.joinRoom(id, pw).fold(
                 onSuccess = { roomInfo ->
+                    val isViewer = roomInfo.role == "viewer"
+                    _isViewerMode.value = isViewer
+
                     phaseOneHandler.reset()
                     phaseTwoHandler.reset()
                     connectionStateRepo.tryTransition(ConnectionState.Connecting)
 
-                    val dm = getApplication<Application>().resources.displayMetrics
-                    phaseOneHandler.startListening(viewModelScope, dm)
+                    if (isViewer) {
+                        // Viewer: skip Phase 1+config, fast-track to Phase 2 ICE
+                        connectionStateRepo.tryTransition(ConnectionState.AwaitingHardwareInfo)
+                        connectionStateRepo.tryTransition(ConnectionState.AwaitingSuggestedConfig)
+                        phaseTwoHandler.startListening(viewModelScope)
+                    } else {
+                        // Host: full flow
+                        val dm = getApplication<Application>().resources.displayMetrics
+                        phaseOneHandler.startListening(viewModelScope, dm)
+                    }
 
                     val relayUrl = guestConnectionRepository.getRelayUrl()
                     webSocketClient.connectRoom(relayUrl, roomInfo.roomId, roomInfo.clientId)
@@ -173,6 +198,58 @@ class ConnectionViewModel @Inject constructor(
                     }
                 }
             }
+        }
+    }
+
+    // Start relay discovery when logged in
+    init {
+        viewModelScope.launch {
+            tokenManager.isLoggedIn.collectLatest { loggedIn ->
+                if (loggedIn) {
+                    relayDiscoveryService.discoverServers().collect { devices ->
+                        _relayDevices.value = devices
+                    }
+                } else {
+                    _relayDevices.value = emptyList()
+                }
+            }
+        }
+    }
+
+    fun connectToRelayDevice(device: RelayDevice) {
+        val roomId = device.roomId ?: return
+        viewModelScope.launch {
+            _guestConnecting.value = true
+            _guestError.value = null
+
+            // Same-account: join room without password (server skips password for owner)
+            guestConnectionRepository.joinRoom(roomId, "").fold(
+                onSuccess = { roomInfo ->
+                    val isViewer = roomInfo.role == "viewer"
+                    _isViewerMode.value = isViewer
+
+                    phaseOneHandler.reset()
+                    phaseTwoHandler.reset()
+                    connectionStateRepo.tryTransition(ConnectionState.Connecting)
+
+                    if (isViewer) {
+                        connectionStateRepo.tryTransition(ConnectionState.AwaitingHardwareInfo)
+                        connectionStateRepo.tryTransition(ConnectionState.AwaitingSuggestedConfig)
+                        phaseTwoHandler.startListening(viewModelScope)
+                    } else {
+                        val dm = getApplication<Application>().resources.displayMetrics
+                        phaseOneHandler.startListening(viewModelScope, dm)
+                    }
+
+                    val relayUrl = guestConnectionRepository.getRelayUrl()
+                    webSocketClient.connectRoom(relayUrl, roomInfo.roomId, roomInfo.clientId)
+                    _guestConnecting.value = false
+                },
+                onFailure = { e ->
+                    _guestError.value = e.message
+                    _guestConnecting.value = false
+                }
+            )
         }
     }
 

@@ -31,7 +31,9 @@ data class RelayDevice(
     @Json(name = "device_name") val deviceName: String,
     @Json(name = "device_type") val deviceType: String,
     val online: Boolean,
-    @Json(name = "last_seen_at") val lastSeenAt: String? = null
+    @Json(name = "last_seen_at") val lastSeenAt: String? = null,
+    @Json(name = "room_id") val roomId: String? = null,
+    @Json(name = "display_id") val displayId: String? = null
 )
 
 @JsonClass(generateAdapter = true)

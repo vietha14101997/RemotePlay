@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
 import com.reka.remoteplay.R
+import com.reka.remoteplay.core.network.relay.RelayDevice
 import com.reka.remoteplay.feature.connection.data.local.SavedServer
 import com.reka.remoteplay.feature.connection.data.remote.ServerDiscoveryService
 import com.reka.remoteplay.feature.connection.domain.model.ConnectionState
@@ -42,6 +43,9 @@ fun ConnectionScreen(
     onConnectToDiscovered: (ServerDiscoveryService.DiscoveredServer) -> Unit,
     onRemoveServer: (SavedServer) -> Unit,
     onScanQr: () -> Unit = {},
+    relayDevices: List<RelayDevice> = emptyList(),
+    isLoggedIn: Boolean = false,
+    onConnectToRelayDevice: (RelayDevice) -> Unit = {},
     guestDeviceId: String = "",
     guestPassword: String = "",
     guestError: String? = null,
@@ -236,6 +240,29 @@ fun ConnectionScreen(
             }
 
             Spacer(modifier = Modifier.height(24.dp))
+
+            // My Servers (relay devices, same-account)
+            if (!isBusy && isLoggedIn && relayDevices.isNotEmpty()) {
+                Text(
+                    text = "MY SERVERS",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = AppTextTertiary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp)
+                )
+
+                relayDevices.forEach { device ->
+                    RelayDeviceItem(
+                        device = device,
+                        onClick = { onConnectToRelayDevice(device) }
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+            }
 
             // Connect by ID (UltraViewer-style)
             if (!isBusy) {
@@ -463,6 +490,59 @@ private fun SavedServerItem(
                     contentDescription = stringResource(R.string.remove),
                     tint = AppTextQuaternary,
                     modifier = Modifier.size(20.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RelayDeviceItem(
+    device: RelayDevice,
+    onClick: () -> Unit
+) {
+    val hasRoom = device.roomId != null
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = device.online && hasRoom, onClick = onClick),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = AppSurface)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Default.Computer,
+                contentDescription = null,
+                tint = if (device.online) AppGreen else AppTextQuaternary,
+                modifier = Modifier.size(36.dp)
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = device.deviceName,
+                    color = AppTextPrimary,
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 15.sp
+                )
+                Text(
+                    text = if (device.online) {
+                        if (hasRoom) "Online - Room ${device.displayId ?: device.roomId}" else "Online"
+                    } else "Offline",
+                    color = if (device.online) AppTextTertiary else AppTextQuaternary,
+                    fontSize = 12.sp
+                )
+            }
+            if (device.online && hasRoom) {
+                Icon(
+                    Icons.Default.PlayArrow,
+                    contentDescription = "Connect",
+                    tint = AppAccent,
+                    modifier = Modifier.size(24.dp)
                 )
             }
         }
