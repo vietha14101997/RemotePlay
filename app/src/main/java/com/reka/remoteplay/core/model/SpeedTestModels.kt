@@ -5,10 +5,10 @@ import com.squareup.moshi.JsonClass
 
 @JsonClass(generateAdapter = true)
 data class SpeedTestEndMessage(
-    @Json(name = "type") val type: String = "speedtest_end",
-    @Json(name = "direction") val direction: String = "download",
-    @Json(name = "totalBytes") val totalBytes: Long = 0,
-    @Json(name = "durationMs") val durationMs: Long = 0
+    @param:Json(name = "type") val type: String = "speedtest_end",
+    @param:Json(name = "direction") val direction: String = "download",
+    @param:Json(name = "totalBytes") val totalBytes: Long = 0,
+    @param:Json(name = "durationMs") val durationMs: Long = 0
 )
 
 data class SpeedTestResult(
