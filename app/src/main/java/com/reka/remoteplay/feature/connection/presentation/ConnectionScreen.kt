@@ -8,6 +8,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Login
+import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -42,7 +44,7 @@ fun ConnectionScreen(
     onConnectToServer: (SavedServer) -> Unit,
     onConnectToDiscovered: (ServerDiscoveryService.DiscoveredServer) -> Unit,
     onRemoveServer: (SavedServer) -> Unit,
-    onScanQr: () -> Unit = {},
+    onLogout: () -> Unit,
     relayDevices: List<RelayDevice> = emptyList(),
     isLoggedIn: Boolean = false,
     onConnectToRelayDevice: (RelayDevice) -> Unit = {},
@@ -71,7 +73,26 @@ fun ConnectionScreen(
                 .padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Spacer(modifier = Modifier.height(48.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                if (isLoggedIn) {
+                    TextButton(onClick = onLogout) {
+                        Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = "Logout", tint = AppRed, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Logout", color = AppRed, fontSize = 14.sp)
+                    }
+                } else {
+                    TextButton(onClick = onLogout) {
+                        Icon(Icons.AutoMirrored.Filled.Login, contentDescription = "Sign In", tint = AppAccent, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Sign In", color = AppAccent, fontSize = 14.sp)
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
 
             // Title
             Icon(
@@ -95,39 +116,21 @@ fun ConnectionScreen(
 
             Spacer(modifier = Modifier.height(32.dp))
 
-            // Server discovery
+            // Server discovery (LAN)
             if (!isBusy) {
                 if (!isScanning && discoveredServers.isEmpty()) {
-                    // Find Server + Scan QR buttons
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    // Find Server button only (Removed QR)
+                    Button(
+                        onClick = onStartScan,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(50.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = AppAccent)
                     ) {
-                        Button(
-                            onClick = onStartScan,
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(50.dp),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = AppAccent)
-                        ) {
-                            Icon(Icons.Default.Search, contentDescription = null)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(stringResource(R.string.find_server), fontWeight = FontWeight.SemiBold)
-                        }
-
-                        OutlinedButton(
-                            onClick = onScanQr,
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(50.dp),
-                            shape = RoundedCornerShape(12.dp),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, AppAccent)
-                        ) {
-                            Icon(Icons.Default.QrCodeScanner, contentDescription = null, tint = AppAccent)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Scan QR", fontWeight = FontWeight.SemiBold, color = AppAccent)
-                        }
+                        Icon(Icons.Default.Search, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(stringResource(R.string.find_server), fontWeight = FontWeight.SemiBold)
                     }
                 } else if (isScanning && discoveredServers.isEmpty()) {
                     // Scanning in progress
@@ -241,7 +244,7 @@ fun ConnectionScreen(
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            // My Servers (relay devices, same-account)
+            // My Servers (relay devices, same-account) - Only show if logged in
             if (!isBusy && isLoggedIn && relayDevices.isNotEmpty()) {
                 Text(
                     text = "MY SERVERS",
@@ -264,8 +267,8 @@ fun ConnectionScreen(
                 Spacer(modifier = Modifier.height(16.dp))
             }
 
-            // Connect by ID (UltraViewer-style)
-            if (!isBusy) {
+            // Connect by ID (UltraViewer-style) - Only show if logged in
+            if (!isBusy && isLoggedIn) {
                 Text(
                     text = "CONNECT BY ID",
                     fontSize = 12.sp,
@@ -357,7 +360,7 @@ fun ConnectionScreen(
                 Spacer(modifier = Modifier.height(24.dp))
             }
 
-            // Recent connections
+            // Recent connections (LAN/Direct)
             if (savedServers.isNotEmpty()) {
                 Text(
                     text = stringResource(R.string.recent_connections),

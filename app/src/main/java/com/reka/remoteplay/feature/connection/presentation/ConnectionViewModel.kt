@@ -17,6 +17,7 @@ import com.reka.remoteplay.core.network.WebSocketClient
 import com.reka.remoteplay.core.network.WsConnectionState
 import com.reka.remoteplay.core.network.relay.RelayDevice
 import com.reka.remoteplay.core.network.relay.TokenManager
+import com.reka.remoteplay.feature.auth.data.AuthRepository
 import com.reka.remoteplay.feature.connection.data.local.ConnectionPreferences
 import com.reka.remoteplay.feature.connection.data.local.SavedServer
 import com.reka.remoteplay.feature.connection.data.remote.PhaseOneHandler
@@ -45,6 +46,7 @@ class ConnectionViewModel @Inject constructor(
     private val serverDiscoveryService: ServerDiscoveryService,
     private val relayDiscoveryService: RelayDiscoveryService,
     private val tokenManager: TokenManager,
+    private val authRepository: AuthRepository,
     private val videoDecoderManager: VideoDecoderManager,
     private val audioPlayer: AudioPlayer,
     private val guestConnectionRepository: GuestConnectionRepository,
@@ -75,8 +77,6 @@ class ConnectionViewModel @Inject constructor(
     // Saved stream settings
     val savedMonitors = preferences.streamMonitors
         .stateIn(viewModelScope, SharingStarted.Eagerly, 1)
-    val savedResolution = preferences.streamResolution
-        .stateIn(viewModelScope, SharingStarted.Eagerly, 1080)
     val savedFps = preferences.streamFps
         .stateIn(viewModelScope, SharingStarted.Eagerly, 60)
     val savedWindowsScale = preferences.windowsScale
@@ -307,38 +307,6 @@ class ConnectionViewModel @Inject constructor(
         connect()
     }
 
-    /**
-     * Connect using QR scan result.
-     * If tunnelUrl is available → internet mode (wss:// via Cloudflare tunnel).
-     * Otherwise → LAN mode (ws:// direct IP).
-     */
-    fun connectWithQrConfig(config: com.reka.remoteplay.core.model.QrScannerConfig) {
-        stopScan()
-        phaseOneHandler.reset()
-        phaseTwoHandler.reset()
-        connectionStateRepo.tryTransition(ConnectionState.Connecting)
-
-        val dm = getApplication<Application>().resources.displayMetrics
-        phaseOneHandler.startListening(viewModelScope, dm)
-
-        if (config.hasTunnelUrl) {
-            // Internet mode via Cloudflare tunnel
-            _hostInput.value = config.tunnelUrl!!
-            viewModelScope.launch {
-                preferences.saveServer(SavedServer(host = config.tunnelUrl, port = config.port))
-            }
-            webSocketClient.connectTunnel(config.tunnelUrl)
-        } else {
-            // LAN mode — direct IP
-            _hostInput.value = config.ip
-            _portInput.value = config.port.toString()
-            viewModelScope.launch {
-                preferences.saveServer(SavedServer(host = config.ip, port = config.port))
-            }
-            webSocketClient.connect(config.ip, config.port, isUsb = false)
-        }
-    }
-
     fun disconnect() {
         audioPlayer.stop()
         videoDecoderManager.releaseAll()
@@ -452,6 +420,10 @@ class ConnectionViewModel @Inject constructor(
     fun resumeStreaming() {
         webSocketClient.sendText(MessageParser.serialize(ResumeStreamingMessage()))
         connectionStateRepo.forceTransition(ConnectionState.Streaming)
+    }
+
+    fun logout() {
+        authRepository.logout()
     }
 
     override fun onCleared() {

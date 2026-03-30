@@ -34,6 +34,11 @@ fun AppNavHost(navController: NavHostController) {
             ConnectionRoute(
                 onNavigateToConfigReview = {
                     navController.navigate(AppDestination.ConfigReview.route)
+                },
+                onNavigateToLogin = {
+                    navController.navigate(AppDestination.Login.route) {
+                        popUpTo(AppDestination.Connection.route) { inclusive = true }
+                    }
                 }
             )
         }

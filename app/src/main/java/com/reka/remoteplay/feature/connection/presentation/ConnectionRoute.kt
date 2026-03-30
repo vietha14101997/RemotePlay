@@ -2,16 +2,16 @@ package com.reka.remoteplay.feature.connection.presentation
 
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.reka.remoteplay.feature.connection.domain.model.ConnectionState
 
 @Composable
 fun ConnectionRoute(
     onNavigateToConfigReview: () -> Unit,
+    onNavigateToLogin: () -> Unit,
     viewModel: ConnectionViewModel = hiltViewModel()
 ) {
     val connectionState by viewModel.connectionState.collectAsState()
-
     val isViewerMode by viewModel.isViewerMode.collectAsState()
 
     // Auto-navigate based on connection state
@@ -23,15 +23,13 @@ fun ConnectionRoute(
                     navigated = true
                     onNavigateToConfigReview()
                 }
-                // Viewer: don't navigate to config, wait for streaming state
             }
             is ConnectionState.ReadyToStream,
             is ConnectionState.StartingStream,
             is ConnectionState.Streaming -> {
-                // Viewer: auto-navigate to streaming (skip config review)
                 if (!navigated && isViewerMode) {
                     navigated = true
-                    onNavigateToConfigReview() // ConfigReviewRoute handles streaming navigation
+                    onNavigateToConfigReview()
                 }
             }
             is ConnectionState.Disconnected, is ConnectionState.Error -> {
@@ -51,42 +49,32 @@ fun ConnectionRoute(
     val guestError by viewModel.guestError.collectAsState()
     val guestConnecting by viewModel.guestConnecting.collectAsState()
 
-    // QR Scanner state
-    var showQrScanner by remember { mutableStateOf(false) }
-
-    if (showQrScanner) {
-        QrScannerScreen(
-            onResult = { config ->
-                showQrScanner = false
-                viewModel.connectWithQrConfig(config)
-            },
-            onBack = { showQrScanner = false }
-        )
-    } else {
-        ConnectionScreen(
-            connectionState = connectionState,
-            savedServers = savedServers,
-            discoveredServers = discoveredServers,
-            isScanning = isScanning,
-            onStartScan = viewModel::startScan,
-            onStopScan = viewModel::stopScan,
-            onDisconnect = viewModel::disconnect,
-            onConnectToServer = viewModel::connectToServer,
-            onConnectToDiscovered = viewModel::connectToDiscovered,
-            onRemoveServer = viewModel::removeServer,
-            onScanQr = { showQrScanner = true },
-            relayDevices = relayDevices,
-            isLoggedIn = isLoggedIn,
-            onConnectToRelayDevice = viewModel::connectToRelayDevice,
-            guestDeviceId = guestDeviceId,
-            guestPassword = guestPassword,
-            guestError = guestError,
-            guestConnecting = guestConnecting,
-            onGuestDeviceIdChange = viewModel::onGuestDeviceIdChange,
-            onGuestPasswordChange = viewModel::onGuestPasswordChange,
-            onGuestConnect = viewModel::connectAsGuest
-        )
-    }
+    ConnectionScreen(
+        connectionState = connectionState,
+        savedServers = savedServers,
+        discoveredServers = discoveredServers,
+        isScanning = isScanning,
+        onStartScan = viewModel::startScan,
+        onStopScan = viewModel::stopScan,
+        onDisconnect = viewModel::disconnect,
+        onConnectToServer = viewModel::connectToServer,
+        onConnectToDiscovered = viewModel::connectToDiscovered,
+        onRemoveServer = viewModel::removeServer,
+        relayDevices = relayDevices,
+        isLoggedIn = isLoggedIn,
+        onConnectToRelayDevice = viewModel::connectToRelayDevice,
+        guestDeviceId = guestDeviceId,
+        guestPassword = guestPassword,
+        guestError = guestError,
+        guestConnecting = guestConnecting,
+        onGuestDeviceIdChange = viewModel::onGuestDeviceIdChange,
+        onGuestPasswordChange = viewModel::onGuestPasswordChange,
+        onGuestConnect = viewModel::connectAsGuest,
+        onLogout = {
+            viewModel.logout()
+            onNavigateToLogin()
+        }
+    )
 }
 
 @Composable
@@ -104,12 +92,10 @@ fun ConfigReviewRoute(
     val bindMobileScreen by viewModel.bindMobileScreen.collectAsState()
     val qualityPreset by viewModel.qualityPreset.collectAsState()
 
-    // Track if stream was paused — survives recomposition/backstack
     var isPaused by rememberSaveable { mutableStateOf(false) }
     val connectionType = remember { viewModel.getConnectionType() }
     val webRtcConnectionType by viewModel.webRtcConnectionType.collectAsState()
 
-    // Navigate to streaming when ICE completes (Start flow only, not Resume)
     var navigated by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(connectionState) {
         if (!navigated && !isPaused) {

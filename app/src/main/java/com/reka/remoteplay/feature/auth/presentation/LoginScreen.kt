@@ -8,6 +8,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -17,6 +18,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.reka.remoteplay.ui.theme.*
@@ -33,6 +35,7 @@ fun LoginScreen(
     onSkip: () -> Unit
 ) {
     var showAdvanced by remember { mutableStateOf(false) }
+    var passwordVisible by remember { mutableStateOf(false) }
 
     Box(
         modifier = Modifier
@@ -85,6 +88,13 @@ fun LoginScreen(
                         onValueChange = onEmailChange,
                         label = { Text("Email", color = AppTextTertiary, fontSize = 13.sp) },
                         leadingIcon = { Icon(Icons.Default.Email, null, tint = AppTextTertiary) },
+                        trailingIcon = {
+                            if (state.email.isNotEmpty()) {
+                                IconButton(onClick = { onEmailChange("") }) {
+                                    Icon(Icons.Default.Clear, "Clear", tint = AppTextTertiary)
+                                }
+                            }
+                        },
                         modifier = Modifier.fillMaxWidth(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
                         singleLine = true,
@@ -99,6 +109,13 @@ fun LoginScreen(
                                 onValueChange = onUsernameChange,
                                 label = { Text("Username", color = AppTextTertiary, fontSize = 13.sp) },
                                 leadingIcon = { Icon(Icons.Default.Person, null, tint = AppTextTertiary) },
+                                trailingIcon = {
+                                    if (state.username.isNotEmpty()) {
+                                        IconButton(onClick = { onUsernameChange("") }) {
+                                            Icon(Icons.Default.Clear, "Clear", tint = AppTextTertiary)
+                                        }
+                                    }
+                                },
                                 modifier = Modifier.fillMaxWidth(),
                                 singleLine = true,
                                 colors = loginFieldColors()
@@ -112,9 +129,25 @@ fun LoginScreen(
                         onValueChange = onPasswordChange,
                         label = { Text("Password", color = AppTextTertiary, fontSize = 13.sp) },
                         leadingIcon = { Icon(Icons.Default.Lock, null, tint = AppTextTertiary) },
+                        trailingIcon = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (state.password.isNotEmpty()) {
+                                    IconButton(onClick = { onPasswordChange("") }) {
+                                        Icon(Icons.Default.Clear, "Clear", tint = AppTextTertiary)
+                                    }
+                                }
+                                IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                                    Icon(
+                                        imageVector = if (passwordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                        contentDescription = if (passwordVisible) "Hide password" else "Show password",
+                                        tint = AppTextTertiary
+                                    )
+                                }
+                            }
+                        },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
-                        visualTransformation = PasswordVisualTransformation(),
+                        visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                         colors = loginFieldColors()
                     )
@@ -152,6 +185,13 @@ fun LoginScreen(
                                 onValueChange = onRelayUrlChange,
                                 label = { Text("Relay URL", color = AppTextTertiary, fontSize = 13.sp) },
                                 leadingIcon = { Icon(Icons.Default.Link, null, tint = AppTextTertiary) },
+                                trailingIcon = {
+                                    if (state.relayUrl.isNotEmpty()) {
+                                        IconButton(onClick = { onRelayUrlChange("") }) {
+                                            Icon(Icons.Default.Clear, "Clear", tint = AppTextTertiary)
+                                        }
+                                    }
+                                },
                                 modifier = Modifier.fillMaxWidth(),
                                 singleLine = true,
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
@@ -233,13 +273,13 @@ fun LoginScreen(
                 border = androidx.compose.foundation.BorderStroke(1.dp, AppBorder)
             ) {
                 Icon(
-                    Icons.Default.ArrowForward,
+                    Icons.AutoMirrored.Filled.ArrowForward,
                     contentDescription = null,
                     tint = AppTextSecondary,
                     modifier = Modifier.size(16.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Skip — Connect by ID", color = AppTextSecondary, fontSize = 14.sp)
+                Text("Skip — LAN connection only", color = AppTextSecondary, fontSize = 14.sp)
             }
 
             Spacer(modifier = Modifier.height(32.dp))

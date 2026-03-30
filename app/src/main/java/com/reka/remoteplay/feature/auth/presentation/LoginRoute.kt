@@ -4,7 +4,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 
 @Composable
 fun LoginRoute(
@@ -13,9 +13,15 @@ fun LoginRoute(
     viewModel: LoginViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
+    val isLoggedIn by viewModel.isLoggedIn.collectAsState()
 
     LaunchedEffect(state.loginSuccess) {
         if (state.loginSuccess) onLoginSuccess()
+    }
+
+    // Auto-navigate if already logged in
+    LaunchedEffect(isLoggedIn) {
+        if (isLoggedIn) onLoginSuccess()
     }
 
     LoginScreen(

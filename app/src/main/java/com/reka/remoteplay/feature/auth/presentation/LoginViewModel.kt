@@ -31,6 +31,8 @@ class LoginViewModel @Inject constructor(
     )
     val uiState: StateFlow<LoginUiState> = _uiState.asStateFlow()
 
+    val isLoggedIn: StateFlow<Boolean> = tokenManager.isLoggedIn
+
     fun onRelayUrlChange(url: String) { _uiState.update { it.copy(relayUrl = url) } }
     fun onEmailChange(email: String) { _uiState.update { it.copy(email = email, error = null) } }
     fun onPasswordChange(pw: String) { _uiState.update { it.copy(password = pw, error = null) } }
