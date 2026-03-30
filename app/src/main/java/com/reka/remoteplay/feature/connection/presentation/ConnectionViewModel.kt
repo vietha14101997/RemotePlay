@@ -132,6 +132,12 @@ class ConnectionViewModel @Inject constructor(
             _guestConnecting.value = true
             _guestError.value = null
 
+            // Fetch TURN servers before joining room (needed for cross-NAT)
+            val iceServers = guestConnectionRepository.fetchIceServers()
+            if (iceServers.isNotEmpty()) {
+                webRtcManager.setIceServers(iceServers)
+            }
+
             guestConnectionRepository.joinRoom(id, pw).fold(
                 onSuccess = { roomInfo ->
                     val isViewer = roomInfo.role == "viewer"
@@ -221,6 +227,12 @@ class ConnectionViewModel @Inject constructor(
         viewModelScope.launch {
             _guestConnecting.value = true
             _guestError.value = null
+
+            // Fetch TURN servers before joining room (needed for cross-NAT)
+            val iceServers = guestConnectionRepository.fetchIceServers()
+            if (iceServers.isNotEmpty()) {
+                webRtcManager.setIceServers(iceServers)
+            }
 
             // Same-account: join room without password (server skips password for owner)
             guestConnectionRepository.joinRoom(roomId, "").fold(
