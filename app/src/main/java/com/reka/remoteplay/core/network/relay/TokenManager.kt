@@ -2,6 +2,7 @@ package com.reka.remoteplay.core.network.relay
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.core.content.edit
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -22,17 +23,17 @@ class TokenManager @Inject constructor(
     var accessToken: String?
         get() = prefs.getString(KEY_ACCESS_TOKEN, null)
         private set(value) {
-            prefs.edit().putString(KEY_ACCESS_TOKEN, value).apply()
+            prefs.edit { putString(KEY_ACCESS_TOKEN, value) }
             _isLoggedIn.value = value != null
         }
 
     var refreshToken: String?
         get() = prefs.getString(KEY_REFRESH_TOKEN, null)
-        private set(value) { prefs.edit().putString(KEY_REFRESH_TOKEN, value).apply() }
+        private set(value) { prefs.edit { putString(KEY_REFRESH_TOKEN, value) } }
 
     var relayUrl: String?
         get() = prefs.getString(KEY_RELAY_URL, null)
-        set(value) { prefs.edit().putString(KEY_RELAY_URL, value).apply() }
+        set(value) { prefs.edit { putString(KEY_RELAY_URL, value) } }
 
     fun saveTokens(access: String, refresh: String) {
         accessToken = access
@@ -40,7 +41,7 @@ class TokenManager @Inject constructor(
     }
 
     fun clearTokens() {
-        prefs.edit().clear().apply()
+        prefs.edit { clear() }
         _isLoggedIn.value = false
     }
 

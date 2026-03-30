@@ -16,7 +16,7 @@ object MessageParser {
             @Suppress("UNCHECKED_CAST")
             val map = mapAdapter.fromJson(rawJson) as? Map<String, Any?>
             map?.get("type") as? String
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             null
         }
     }
@@ -24,7 +24,7 @@ object MessageParser {
     inline fun <reified T> parse(rawJson: String): T? {
         return try {
             moshi.adapter(T::class.java).fromJson(rawJson)
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             null
         }
     }
