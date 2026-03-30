@@ -5,10 +5,7 @@ import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.reka.remoteplay.R
-import com.reka.remoteplay.core.model.PauseMonitorMessage
-import com.reka.remoteplay.core.model.PauseStreamingMessage
-import com.reka.remoteplay.core.model.ResumeMonitorMessage
-import com.reka.remoteplay.core.model.SetQualityMessage
+import com.reka.remoteplay.core.model.*
 import com.reka.remoteplay.core.util.EncoderResolutionCalculator
 import com.reka.remoteplay.core.util.QualityPreset
 import com.reka.remoteplay.core.network.MessageParser
@@ -109,7 +106,7 @@ class StreamingViewModel @Inject constructor(
 
         // Signal server when decoder is ready so it re-sends codec config + IDR
         videoDecoderManager.onDecoderReady = { monitorIndex ->
-            val msg = com.reka.remoteplay.core.model.DecoderReadyMessage(monitorIndex = monitorIndex)
+            val msg = DecoderReadyMessage(monitorIndex = monitorIndex)
             webSocketClient.sendText(MessageParser.serialize(msg))
         }
 
@@ -134,27 +131,23 @@ class StreamingViewModel @Inject constructor(
 
         viewModelScope.launch {
             webSocketClient.textMessages.collect { text ->
-                if (text.contains("foreground_monitor")) {
-                    val idx = "\"monitorIndex\"\\s*:\\s*(\\d+)".toRegex()
-                        .find(text)?.groupValues?.getOrNull(1)?.toIntOrNull()
-                    if (idx != null && idx != videoDecoderManager.activeMonitor.value) {
-                        switchMonitor(idx)
+                when (val msg = MessageParser.parseServerMessage(text)) {
+                    is ForegroundMonitorMessage -> {
+                        if (msg.monitorIndex != videoDecoderManager.activeMonitor.value) {
+                            switchMonitor(msg.monitorIndex)
+                        }
                     }
-                } else if (text.contains("codec_changed")) {
-                    val actual = "\"actualCodec\"\\s*:\\s*\"(\\w+)\"".toRegex()
-                        .find(text)?.groupValues?.getOrNull(1)
-                    if (actual != null) {
-                        videoDecoderManager.changeCodec(actual)
+                    is CodecChangedMessage -> {
+                        videoDecoderManager.changeCodec(msg.actualCodec)
                         val activeIdx = videoDecoderManager.activeMonitor.value
                         webSocketClient.sendText(MessageParser.serialize(PauseMonitorMessage(monitorIndex = activeIdx)))
                         // Server needs 1-2 frames to flush old codec before sending IDR
                         delay(CODEC_SWITCH_FLUSH_MS)
                         webSocketClient.sendText(MessageParser.serialize(ResumeMonitorMessage(monitorIndex = activeIdx)))
                     }
-                } else if (text.contains("caret_position")) {
-                    val u = "\"u\"\\s*:\\s*([0-9.]+)".toRegex()
-                        .find(text)?.groupValues?.getOrNull(1)?.toFloatOrNull()
-                    if (u != null) _caretU.value = u
+                    is CaretPositionMessage -> {
+                        _caretU.value = msg.u
+                    }
                 }
             }
         }
@@ -237,7 +230,7 @@ class StreamingViewModel @Inject constructor(
     fun changeFps(newFps: Int) {
         _streamFps.value = newFps
         phaseTwoHandler.setConfiguredFps(newFps)
-        val msg = com.reka.remoteplay.core.model.UpdateConfigMessage(fps = newFps)
+        val msg = UpdateConfigMessage(fps = newFps)
         webSocketClient.sendText(MessageParser.serialize(msg))
     }
 
@@ -246,7 +239,7 @@ class StreamingViewModel @Inject constructor(
         phaseTwoHandler.setQualityPreset(preset)
         val screenW = phaseTwoHandler.screenWidth.value
         val screenH = phaseTwoHandler.screenHeight.value
-        val msg = com.reka.remoteplay.core.model.UpdateConfigMessage(
+        val msg = UpdateConfigMessage(
             qualityPreset = preset.name,
             screenWidth = screenW,
             screenHeight = screenH,

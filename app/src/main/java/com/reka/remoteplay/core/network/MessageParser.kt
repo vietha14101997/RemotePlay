@@ -61,6 +61,9 @@ object MessageParser {
             "fps_adjusted" -> parse<FpsAdjustedMessage>(rawJson)
             "bitrate_adjusted" -> parse<BitrateAdjustedMessage>(rawJson)
             "quality_recommendation" -> parse<QualityRecommendationMessage>(rawJson)
+            "foreground_monitor" -> parse<ForegroundMonitorMessage>(rawJson)
+            "codec_changed" -> parse<CodecChangedMessage>(rawJson)
+            "caret_position" -> parse<CaretPositionMessage>(rawJson)
             // Common
             "error" -> parse<ErrorMessage>(rawJson)
             else -> null

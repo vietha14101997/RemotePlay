@@ -121,6 +121,25 @@ data class ConfigUpdatedMessage(
     @Json(name = "message") val message: String = ""
 )
 
+@JsonClass(generateAdapter = true)
+data class ForegroundMonitorMessage(
+    @Json(name = "type") val type: String = "foreground_monitor",
+    @Json(name = "monitorIndex") val monitorIndex: Int = 0
+)
+
+@JsonClass(generateAdapter = true)
+data class CodecChangedMessage(
+    @Json(name = "type") val type: String = "codec_changed",
+    @Json(name = "actualCodec") val actualCodec: String = ""
+)
+
+@JsonClass(generateAdapter = true)
+data class CaretPositionMessage(
+    @Json(name = "type") val type: String = "caret_position",
+    @Json(name = "u") val u: Float = 0.5f,
+    @Json(name = "v") val v: Float = 0.5f
+)
+
 // ==================== Cursor Messages ====================
 
 @JsonClass(generateAdapter = true)

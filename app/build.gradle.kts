@@ -1,3 +1,4 @@
+import com.android.build.api.dsl.ApplicationExtension
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -9,7 +10,7 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
-android {
+configure<ApplicationExtension> {
     namespace = "com.reka.remoteplay"
     compileSdk = 36
 
@@ -27,7 +28,7 @@ android {
     }
 
     buildTypes {
-        release {
+        getByName("release") {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
