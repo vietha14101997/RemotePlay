@@ -95,6 +95,12 @@ class VideoDecoderManager @Inject constructor(
             Log.i(TAG, "Monitor $monitorIndex decoder ready, signaling server")
             onDecoderReady?.invoke(monitorIndex)
         }
+        // C3: Track server-side resolution changes (e.g. quality preset switch via update_config).
+        // The server's TextureResizer recalculates encoded resolution and the new dimensions are
+        // signalled via the SPS/PPS in the next codec config frame → MediaCodec fires this callback.
+        decoder.onOutputFormatChanged = { newW, newH ->
+            Log.i(TAG, "Monitor $monitorIndex resolution changed to ${newW}x${newH} (server quality change)")
+        }
 
         // Apply cached codec config BEFORE surface so configureCodec() fires on setSurface()
         val cachedConfig = codecConfigs[monitorIndex]

@@ -26,10 +26,10 @@ class VideoDecoder(
     targetFps: Int = 60
 ) {
     private var mediaCodec: MediaCodec? = null
-    private var configured = false
+    @Volatile private var configured = false
     private var surface: Surface? = null
     private var codecConfigData: ByteArray? = null
-    private var decoderBootstrapped = false
+    @Volatile private var decoderBootstrapped = false
     private var firstFrameRendered = false
     private val lock = ReentrantLock()
 
@@ -66,6 +66,12 @@ class VideoDecoder(
 
     var onFirstFrame: (() -> Unit)? = null
     var onDecoderReady: (() -> Unit)? = null
+    /**
+     * C3: Fired on the callbackHandler thread when the decoder signals an output format change.
+     * This happens when the server changes the encoded resolution mid-stream (e.g. quality preset
+     * switch via update_config). Arguments are (newWidth, newHeight).
+     */
+    var onOutputFormatChanged: ((Int, Int) -> Unit)? = null
 
     companion object {
         private const val TAG = "VideoDecoder"
@@ -174,7 +180,7 @@ class VideoDecoder(
                 }
                 setInteger(MediaFormat.KEY_PRIORITY, 0)
                 setInteger(MediaFormat.KEY_OPERATING_RATE, Short.MAX_VALUE.toInt())
-                setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 512 * 1024)
+                setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 2 * 1024 * 1024) // 2MB: handles 4K H265 keyframes
                 try { setInteger("output-reorder-depth", 0) } catch (_: Exception) {}
                 try { setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0) } catch (_: Exception) {}
                 try { setInteger("max-dec-frame-buffering", 1) } catch (_: Exception) {}
@@ -247,7 +253,14 @@ class VideoDecoder(
                 }
 
                 override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {
-                    Log.i(TAG, "[$monitorIndex] Format: ${format.getInteger(MediaFormat.KEY_WIDTH)}x${format.getInteger(MediaFormat.KEY_HEIGHT)}")
+                    val newW = try { format.getInteger(MediaFormat.KEY_WIDTH) } catch (_: Exception) { -1 }
+                    val newH = try { format.getInteger(MediaFormat.KEY_HEIGHT) } catch (_: Exception) { -1 }
+                    Log.i(TAG, "[$monitorIndex] Output format changed: ${newW}x${newH}")
+                    if (newW > 0 && newH > 0) {
+                        // Notify VideoDecoderManager so it can re-seed frame pacing, update
+                        // surface layout, or log resolution changes for diagnostics.
+                        onOutputFormatChanged?.invoke(newW, newH)
+                    }
                 }
             }, callbackHandler)
 

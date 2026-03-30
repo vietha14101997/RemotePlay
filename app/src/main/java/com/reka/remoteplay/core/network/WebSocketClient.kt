@@ -67,15 +67,21 @@ class WebSocketClient @Inject constructor() {
     }
 
     /**
+     * M1: Normalize a base URL to its WebSocket equivalent.
+     * Trims trailing slash and converts https/http scheme to wss/ws.
+     */
+    private fun normalizeWsUrl(url: String): String =
+        url.trimEnd('/')
+            .replace("https://", "wss://")
+            .replace("http://", "ws://")
+
+    /**
      * Connect via Cloudflare tunnel URL (e.g. https://xxx.trycloudflare.com).
      * Uses wss:// scheme since tunnel provides HTTPS.
      */
     fun connectTunnel(tunnelUrl: String, token: String? = null) {
-        val baseUrl = tunnelUrl.trimEnd('/')
-            .replace("https://", "wss://")
-            .replace("http://", "ws://")
         val url = buildString {
-            append(baseUrl)
+            append(normalizeWsUrl(tunnelUrl))
             append("/signal")
             if (token != null) append("?token=$token")
         }
@@ -87,10 +93,7 @@ class WebSocketClient @Inject constructor() {
      * Uses WSS + JWT token for authentication.
      */
     fun connectRelay(relayUrl: String, sessionId: String, token: String) {
-        val baseUrl = relayUrl.trimEnd('/')
-            .replace("https://", "wss://")
-            .replace("http://", "ws://")
-        val url = "$baseUrl/ws/client?session=$sessionId&token=$token"
+        val url = "${normalizeWsUrl(relayUrl)}/ws/client?session=$sessionId&token=$token"
         connectWithUrl(url)
     }
 
@@ -98,10 +101,7 @@ class WebSocketClient @Inject constructor() {
      * Connect via relay for guest session (no JWT token needed).
      */
     fun connectGuestRelay(relayUrl: String, sessionId: String) {
-        val baseUrl = relayUrl.trimEnd('/')
-            .replace("https://", "wss://")
-            .replace("http://", "ws://")
-        val url = "$baseUrl/ws/guest?session=$sessionId"
+        val url = "${normalizeWsUrl(relayUrl)}/ws/guest?session=$sessionId"
         connectWithUrl(url)
     }
 
@@ -109,10 +109,7 @@ class WebSocketClient @Inject constructor() {
      * Connect to room via relay server.
      */
     fun connectRoom(relayUrl: String, roomId: String, clientId: String) {
-        val baseUrl = relayUrl.trimEnd('/')
-            .replace("https://", "wss://")
-            .replace("http://", "ws://")
-        val url = "$baseUrl/ws/room?room_id=$roomId&client_id=$clientId"
+        val url = "${normalizeWsUrl(relayUrl)}/ws/room?room_id=$roomId&client_id=$clientId"
         connectWithUrl(url)
     }
 
@@ -189,16 +186,44 @@ class WebSocketClient @Inject constructor() {
     private fun startPingLoop() {
         pingJob?.cancel()
         pingJob = scope.launch {
+            // Seed lastPongTime so the first interval doesn't false-positive.
+            lastPongTime.set(System.currentTimeMillis())
             while (isActive) {
-                delay(3000)
+                delay(PING_INTERVAL_MS)
                 val ts = System.currentTimeMillis()
                 webSocket?.send("ping:$ts")
+
+                // C2: detect silent server death (no FIN/RST sent).
+                // If we haven't received a pong for 3 consecutive intervals, mark FAILED.
+                val elapsed = System.currentTimeMillis() - lastPongTime.get()
+                if (elapsed > PING_TIMEOUT_MS) {
+                    Log.w(TAG, "Ping timeout (${elapsed}ms since last pong) — marking FAILED")
+                    _connectionState.value = WsConnectionState.FAILED
+                    webSocket?.cancel()
+                    webSocket = null
+                    break
+                }
             }
         }
     }
 
+    /**
+     * C1: Release OkHttpClient thread pool and connection pool.
+     * Call from Application.onTerminate() or DI teardown.
+     * Without this, the dispatcher's ExecutorService keeps 5 threads alive indefinitely.
+     */
+    fun shutdown() {
+        disconnect()
+        client.dispatcher.executorService.shutdown()
+        client.connectionPool.evictAll()
+        scope.cancel()
+    }
+
     companion object {
         private const val TAG = "WebSocketClient"
+        private const val PING_INTERVAL_MS = 3_000L
+        /** 3 missed pings before declaring connection dead. */
+        private const val PING_TIMEOUT_MS = PING_INTERVAL_MS * 3
     }
 }
 

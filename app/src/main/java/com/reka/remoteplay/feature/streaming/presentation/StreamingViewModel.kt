@@ -8,6 +8,7 @@ import com.reka.remoteplay.R
 import com.reka.remoteplay.core.model.PauseMonitorMessage
 import com.reka.remoteplay.core.model.PauseStreamingMessage
 import com.reka.remoteplay.core.model.ResumeMonitorMessage
+import com.reka.remoteplay.core.model.SetQualityMessage
 import com.reka.remoteplay.core.util.EncoderResolutionCalculator
 import com.reka.remoteplay.core.util.QualityPreset
 import com.reka.remoteplay.core.network.MessageParser
@@ -53,8 +54,8 @@ class StreamingViewModel @Inject constructor(
 
     fun setViewerQuality(quality: String) {
         _viewerQuality.value = quality
-        // Send to server via WS
-        webSocketClient.sendText("{\"type\":\"set_quality\",\"quality\":\"$quality\"}")
+        // M2: use type-safe model + MessageParser instead of raw JSON string
+        webSocketClient.sendText(MessageParser.serialize(SetQualityMessage(quality = quality)))
     }
 
     private val _streamFps = MutableStateFlow(phaseTwoHandler.configuredFps.value)
@@ -146,7 +147,8 @@ class StreamingViewModel @Inject constructor(
                         videoDecoderManager.changeCodec(actual)
                         val activeIdx = videoDecoderManager.activeMonitor.value
                         webSocketClient.sendText(MessageParser.serialize(PauseMonitorMessage(monitorIndex = activeIdx)))
-                        delay(50)
+                        // Server needs 1-2 frames to flush old codec before sending IDR
+                        delay(CODEC_SWITCH_FLUSH_MS)
                         webSocketClient.sendText(MessageParser.serialize(ResumeMonitorMessage(monitorIndex = activeIdx)))
                     }
                 } else if (text.contains("caret_position")) {
@@ -160,11 +162,12 @@ class StreamingViewModel @Inject constructor(
         if (isResume) {
             val activeIdx = videoDecoderManager.activeMonitor.value
             viewModelScope.launch {
-                delay(200)
+                // Wait for decoder settle after PauseMonitor handshake
+                delay(RESUME_SETTLE_MS)
                 webSocketClient.sendText(MessageParser.serialize(PauseMonitorMessage(monitorIndex = activeIdx)))
-                delay(100)
+                delay(PAUSE_BETWEEN_RESUME_MS)
                 webSocketClient.sendText(MessageParser.serialize(ResumeMonitorMessage(monitorIndex = activeIdx)))
-                delay(200)
+                delay(RESUME_SETTLE_MS)
                 webRtcManager.sendInput(InputProtocol.encodeFocusMonitor(activeIdx))
                 sendWarpCursor(activeIdx, 0.5f, 0.5f)
                 externalInputHandler.setEnabled(true)
@@ -181,7 +184,8 @@ class StreamingViewModel @Inject constructor(
                     }
                 }
 
-                delay(300)
+                // Allow ICE to stabilise before injecting focus + cursor warp
+                delay(FOCUS_WARP_DELAY_MS)
                 webRtcManager.sendInput(InputProtocol.encodeFocusMonitor(0))
                 sendWarpCursor(0, 0.5f, 0.5f)
                 externalInputHandler.setEnabled(true)
@@ -295,5 +299,16 @@ class StreamingViewModel @Inject constructor(
             videoDecoderManager.releaseAll()
             webRtcManager.dispose()
         }
+    }
+
+    private companion object {
+        /** Server needs 1-2 frames to flush old codec before sending the next IDR. */
+        const val CODEC_SWITCH_FLUSH_MS = 50L
+        /** Decoder needs time to settle after PauseMonitor/ResumeMonitor handshake. */
+        const val RESUME_SETTLE_MS = 200L
+        /** Gap between Pause and Resume signals to avoid race on the server encoder. */
+        const val PAUSE_BETWEEN_RESUME_MS = 100L
+        /** Allow ICE to stabilise before injecting focus warp + enabling input. */
+        const val FOCUS_WARP_DELAY_MS = 300L
     }
 }

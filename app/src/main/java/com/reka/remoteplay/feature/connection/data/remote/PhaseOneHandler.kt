@@ -33,7 +33,6 @@ class PhaseOneHandler @Inject constructor(
 
     private var messageJob: Job? = null
     private var binaryJob: Job? = null
-    private var speedTestJob: Job? = null
     private var listeningScope: CoroutineScope? = null
 
     companion object {
@@ -104,10 +103,8 @@ class PhaseOneHandler @Inject constructor(
     fun reset() {
         messageJob?.cancel()
         binaryJob?.cancel()
-        speedTestJob?.cancel()
         messageJob = null
         binaryJob = null
-        speedTestJob = null
         listeningScope = null
         _serverInfo.value = null
         _suggestedConfig.value = null

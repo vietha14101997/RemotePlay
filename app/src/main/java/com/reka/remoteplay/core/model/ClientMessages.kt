@@ -98,6 +98,13 @@ data class UpdateConfigMessage(
     @Json(name = "screenHeight") val screenHeight: Int? = null,
 )
 
+/** M2: type-safe replacement for the raw JSON string previously used in StreamingViewModel. */
+@JsonClass(generateAdapter = true)
+data class SetQualityMessage(
+    @Json(name = "type") val type: String = "set_quality",
+    @Json(name = "quality") val quality: String
+)
+
 // ==================== Feedback: Client -> Server ====================
 
 @JsonClass(generateAdapter = true)

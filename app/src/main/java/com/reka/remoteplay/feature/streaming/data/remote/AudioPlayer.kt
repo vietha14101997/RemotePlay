@@ -16,7 +16,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -82,14 +82,6 @@ class AudioPlayer @Inject constructor(
         @Suppress("DEPRECATION")
         audioManager.stopBluetoothSco()
 
-        // Restore last stream volume (if saved from previous session)
-        val lastVol = runBlocking { preferences.streamVolume.first() }
-        if (lastVol >= 0) {
-            val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)
-            audioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL, lastVol.coerceAtMost(max), 0)
-            Log.d(TAG, "Restored stream volume to $lastVol")
-        }
-
         audioScope = scope
         audioTrack?.play()
 
@@ -109,6 +101,14 @@ class AudioPlayer @Inject constructor(
         Log.d(TAG, "AudioTrack started (VOICE_COMM, LOW_LATENCY, sco=off, boost=$VOLUME_BOOST)")
 
         dcAudioJob = scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            // I3: restore volume on IO thread — avoids blocking Main with DataStore read.
+            val lastVol = try { preferences.streamVolume.first() } catch (_: Exception) { -1 }
+            if (lastVol >= 0) {
+                val max = audioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)
+                audioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL, lastVol.coerceAtMost(max), 0)
+                Log.d(TAG, "Restored stream volume to $lastVol")
+            }
+
             var count = 0L
             // Pre-allocate reusable buffer to avoid GC pressure from amplify() every 10ms
             var reusableBuffer: ByteArray? = null

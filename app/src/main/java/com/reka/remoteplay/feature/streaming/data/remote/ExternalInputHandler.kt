@@ -16,7 +16,9 @@ class ExternalInputHandler @Inject constructor(
     private val webRtcManager: WebRtcManager
 ) {
     private var enabled = false
-    private val pressedKeys = mutableSetOf<Short>()
+    // I1: pressedKeys is written from Android InputDispatcher thread (onKeyEvent) and read from
+    // the calling thread in releaseAllKeys(). A plain mutableSetOf is not thread-safe.
+    private val pressedKeys: MutableSet<Short> = java.util.Collections.synchronizedSet(mutableSetOf())
 
     companion object {
         private const val DEADZONE = 3000
