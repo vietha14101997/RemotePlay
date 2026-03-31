@@ -469,7 +469,7 @@ private fun SavedServerItem(
             Spacer(modifier = Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = if (server.name.isNotEmpty()) server.name else server.host,
+                    text = server.name.ifEmpty { server.host },
                     color = AppTextPrimary,
                     fontWeight = FontWeight.Medium,
                     fontSize = 15.sp

@@ -18,7 +18,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
@@ -38,6 +37,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -52,45 +52,53 @@ import com.reka.remoteplay.feature.streaming.data.remote.CursorRenderer
 import com.reka.remoteplay.ui.theme.*
 import kotlinx.coroutines.delay
 
+data class StreamingUiState(
+    val monitors: List<MonitorInfoDto> = emptyList(),
+    val activeMonitor: Int = 0,
+    val showUI: Boolean = false,
+    val firstFrames: Set<Int> = emptySet(),
+    val rttMs: Float = 0f,
+    val connectionState: ConnectionState = ConnectionState.Disconnected,
+    val showKeyboard: Boolean = false,
+    val isMuted: Boolean = false,
+    val isMicEnabled: Boolean = false,
+    val cursorState: CursorRenderer.CursorState = CursorRenderer.CursorState(),
+    val isDragging: Boolean = false,
+    val cursorImage: CursorRenderer.CursorImageEntry? = null,
+    val streamFps: Int = 60,
+    val availableFpsOptions: List<Int> = listOf(30, 60),
+    val qualityPreset: com.reka.remoteplay.core.util.QualityPreset = com.reka.remoteplay.core.util.QualityPreset.Quality,
+    val qualityPresetHeights: Map<com.reka.remoteplay.core.util.QualityPreset, Int> = emptyMap(),
+    val isViewerMode: Boolean = false,
+    val viewerQuality: String = "high"
+)
+
+data class StreamingUiActions(
+    val onBack: () -> Unit = {},
+    val onInitStreaming: () -> Unit = {},
+    val onPauseAndGoBack: () -> Unit = {},
+    val onSwitchMonitor: (Int) -> Unit = {},
+    val onToggleUI: () -> Unit = {},
+    val onHideUI: () -> Unit = {},
+    val onToggleMute: () -> Unit = {},
+    val onToggleMic: () -> Unit = {},
+    val onToggleKeyboard: () -> Unit = {},
+    val onSendKey: (Int, Boolean) -> Unit = { _, _ -> },
+    val onSendText: (String) -> Unit = {},
+    val onSendMouseMove: (Short, Short) -> Unit = { _, _ -> },
+    val onSendMouseButton: (Byte, Boolean) -> Unit = { _, _ -> },
+    val onSendMouseWheel: (Short, Short) -> Unit = { _, _ -> },
+    val onSetDragging: (Boolean) -> Unit = {},
+    val onReConfineCursor: () -> Unit = {},
+    val onChangeFps: (Int) -> Unit = {},
+    val onChangeQualityPreset: (com.reka.remoteplay.core.util.QualityPreset) -> Unit = {},
+    val onChangeViewerQuality: (String) -> Unit = {}
+)
+
 @Composable
 fun StreamingScreen(
-    monitors: List<MonitorInfoDto>,
-    activeMonitor: Int,
-    showUI: Boolean,
-    firstFrames: Set<Int>,
-    rttMs: Float,
-    connectionState: ConnectionState,
-    showKeyboard: Boolean,
-    isMuted: Boolean,
-    isMicEnabled: Boolean,
-    cursorState: CursorRenderer.CursorState,
-    isDragging: Boolean,
-    cursorImage: CursorRenderer.CursorImageEntry?,
-    onBack: () -> Unit,
-    onInitStreaming: () -> Unit,
-    onPauseAndGoBack: () -> Unit,
-    onSwitchMonitor: (Int) -> Unit,
-    onToggleUI: () -> Unit,
-    onHideUI: () -> Unit,
-    onToggleMute: () -> Unit,
-    onToggleMic: () -> Unit,
-    onToggleKeyboard: () -> Unit,
-    onSendKey: (Int, Boolean) -> Unit,
-    onSendText: (String) -> Unit,
-    onSendMouseMove: (Short, Short) -> Unit,
-    onSendMouseButton: (Byte, Boolean) -> Unit,
-    onSendMouseWheel: (Short, Short) -> Unit,
-    onSetDragging: (Boolean) -> Unit,
-    onReConfineCursor: () -> Unit,
-    streamFps: Int = 60,
-    availableFpsOptions: List<Int> = listOf(30, 60),
-    onChangeFps: (Int) -> Unit = {},
-    qualityPreset: com.reka.remoteplay.core.util.QualityPreset = com.reka.remoteplay.core.util.QualityPreset.Quality,
-    qualityPresetHeights: Map<com.reka.remoteplay.core.util.QualityPreset, Int> = emptyMap(),
-    onChangeQualityPreset: (com.reka.remoteplay.core.util.QualityPreset) -> Unit = {},
-    isViewerMode: Boolean = false,
-    viewerQuality: String = "high",
-    onChangeViewerQuality: (String) -> Unit = {},
+    state: StreamingUiState,
+    actions: StreamingUiActions,
     onSurfaceCreated: (Surface) -> Unit,
     onSurfaceDestroyed: () -> Unit
 ) {
@@ -101,35 +109,50 @@ fun StreamingScreen(
     var uiHidden by remember { mutableStateOf(false) }
     var showQualityPicker by remember { mutableStateOf(false) }
 
+    val pressBackToPauseMsg = stringResource(R.string.press_back_to_pause)
+    val pressBackToShowUiMsg = stringResource(R.string.press_back_to_show_ui)
+
     // Zoom & Pan state
     var zoomScale by remember { mutableFloatStateOf(1f) }
     var panX by remember { mutableFloatStateOf(0f) }
     var panY by remember { mutableFloatStateOf(0f) }
-    var zoomDelta by remember { mutableFloatStateOf(0f) }
-    var moveDeltaX by remember { mutableFloatStateOf(0f) }
-    var moveDeltaY by remember { mutableFloatStateOf(0f) }
+    
+    // Joystick deltas
+    val zoomDelta = remember { mutableFloatStateOf(0f) }
+    val moveDeltaX = remember { mutableFloatStateOf(0f) }
+    val moveDeltaY = remember { mutableFloatStateOf(0f) }
 
-    // Continuous zoom/pan update while joystick is held
-    // panX/panY in -1..1 range, translation computed in graphicsLayer
-    LaunchedEffect(zoomDelta, moveDeltaX, moveDeltaY) {
-        if (zoomDelta == 0f && moveDeltaX == 0f && moveDeltaY == 0f) return@LaunchedEffect
+    // Use rememberUpdatedState to ensure LaunchedEffect always uses latest delta values
+    // without restarting the loop unnecessarily.
+    val currentZoomDelta by rememberUpdatedState(zoomDelta.floatValue)
+    val currentMoveDeltaX by rememberUpdatedState(moveDeltaX.floatValue)
+    val currentMoveDeltaY by rememberUpdatedState(moveDeltaY.floatValue)
+
+    LaunchedEffect(Unit) {
         while (true) {
-            if (zoomDelta != 0f) {
-                zoomScale = (zoomScale - zoomDelta * 0.03f).coerceIn(1f, 4f)
+            val zD = currentZoomDelta
+            val mDX = currentMoveDeltaX
+            val mDY = currentMoveDeltaY
+
+            if (zD != 0f) {
+                zoomScale = (zoomScale - zD * 0.03f).coerceIn(1f, 4f)
             }
-            // Clamp pan (when zooming out, pan auto-shrinks since translation formula uses scale)
-            panX = panX.coerceIn(-1f, 1f)
-            panY = panY.coerceIn(-1f, 1f)
-            if (zoomScale > 1f && (moveDeltaX != 0f || moveDeltaY != 0f)) {
-                panX = (panX - moveDeltaX * 0.02f).coerceIn(-1f, 1f)
-                panY = (panY - moveDeltaY * 0.02f).coerceIn(-1f, 1f)
+            
+            // Apply panning if zoomed in
+            if (zoomScale > 1f && (mDX != 0f || mDY != 0f)) {
+                panX = (panX - mDX * 0.02f).coerceIn(-1f, 1f)
+                panY = (panY - mDY * 0.02f).coerceIn(-1f, 1f)
+            } else if (zoomScale <= 1f) {
+                panX = 0f
+                panY = 0f
             }
-            kotlinx.coroutines.delay(16L)
+
+            delay(16L)
         }
     }
 
-    LaunchedEffect(showUI) {
-        if (!showUI) {
+    LaunchedEffect(state.showUI) {
+        if (!state.showUI) {
             showQualityPicker = false
         }
     }
@@ -139,10 +162,10 @@ fun StreamingScreen(
         if (uiHidden) {
             uiHidden = false
         } else if (backPressedOnce) {
-            onPauseAndGoBack()
+            actions.onPauseAndGoBack()
         } else {
             backPressedOnce = true
-            Toast.makeText(context, context.getString(R.string.press_back_to_pause), Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, pressBackToPauseMsg, Toast.LENGTH_SHORT).show()
         }
     }
     LaunchedEffect(backPressedOnce) {
@@ -157,9 +180,8 @@ fun StreamingScreen(
     var textFieldValue by remember { mutableStateOf(TextFieldValue()) }
     var lastSentText by remember { mutableStateOf("") }
 
-    // Only auto-show soft keyboard if hardware keyboard is NOT available
-    LaunchedEffect(showKeyboard, isHardwareKeyboardAvailable) {
-        if (showKeyboard && !isHardwareKeyboardAvailable) {
+    LaunchedEffect(state.showKeyboard, isHardwareKeyboardAvailable) {
+        if (state.showKeyboard && !isHardwareKeyboardAvailable) {
             focusRequester.requestFocus()
             keyboardController?.show()
         } else {
@@ -187,18 +209,18 @@ fun StreamingScreen(
         }
     }
 
-    LaunchedEffect(Unit) { onInitStreaming() }
+    LaunchedEffect(Unit) { actions.onInitStreaming() }
 
-    LaunchedEffect(cursorState.monitorIndex) {
-        if (!isDragging && cursorState.monitorIndex != activeMonitor) {
-            onSwitchMonitor(cursorState.monitorIndex)
+    LaunchedEffect(state.cursorState.monitorIndex) {
+        if (!state.isDragging && state.cursorState.monitorIndex != state.activeMonitor) {
+            actions.onSwitchMonitor(state.cursorState.monitorIndex)
         }
     }
 
-    LaunchedEffect(connectionState) {
-        when (connectionState) {
-            is ConnectionState.ConfiguringSettings -> onBack()
-            is ConnectionState.Disconnected -> onBack()
+    LaunchedEffect(state.connectionState) {
+        when (state.connectionState) {
+            is ConnectionState.ConfiguringSettings -> actions.onBack()
+            is ConnectionState.Disconnected -> actions.onBack()
             else -> {}
         }
     }
@@ -208,8 +230,6 @@ fun StreamingScreen(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
-        // Transparent TextField for software keyboard input, 
-        // bypassed when using hardware keyboard to prevent focus issues.
         BasicTextField(
             value = textFieldValue,
             onValueChange = { newValue ->
@@ -221,11 +241,11 @@ fun StreamingScreen(
                     val common = committed.commonPrefixWith(sent).length
                     val toDelete = sent.length - common
                     val toSend = committed.substring(common)
-                    repeat(toDelete) { onSendKey(0x08, true); onSendKey(0x08, false) }
+                    repeat(toDelete) { actions.onSendKey(0x08, true); actions.onSendKey(0x08, false) }
                     for (ch in toSend) {
                         val vk = charToVirtualKey(ch)
-                        if (vk != 0) { onSendKey(vk, true); onSendKey(vk, false) }
-                        else { onSendText(ch.toString()) }
+                        if (vk != 0) { actions.onSendKey(vk, true); actions.onSendKey(vk, false) }
+                        else { actions.onSendText(ch.toString()) }
                     }
                     lastSentText = committed
                 }
@@ -235,7 +255,7 @@ fun StreamingScreen(
             modifier = Modifier.focusRequester(focusRequester).size(1.dp).offset(x = (-100).dp)
         )
 
-        val activeMonitorInfo = monitors.getOrNull(activeMonitor)
+        val activeMonitorInfo = state.monitors.getOrNull(state.activeMonitor)
         val videoAspectRatio = if (activeMonitorInfo != null) {
             activeMonitorInfo.width.toFloat() / activeMonitorInfo.height.toFloat().coerceAtLeast(1f)
         } else 16f / 9f
@@ -248,8 +268,6 @@ fun StreamingScreen(
                 .graphicsLayer {
                     scaleX = zoomScale
                     scaleY = zoomScale
-                    // panX/Y in -1..1, translation = pan * containerSize * (scale-1) / 2
-                    // This ensures scaled content edges never go past container edges
                     translationX = panX * size.width * (zoomScale - 1f) / 2f
                     translationY = panY * size.height * (zoomScale - 1f) / 2f
                 }
@@ -259,10 +277,10 @@ fun StreamingScreen(
                 onSurfaceDestroyed = onSurfaceDestroyed,
                 modifier = Modifier.fillMaxSize()
             )
-            if (!isDragging) {
+            if (!state.isDragging) {
                 CursorOverlay(
-                    cursorState = cursorState,
-                    cursorImage = cursorImage,
+                    cursorState = state.cursorState,
+                    cursorImage = state.cursorImage,
                     desktopWidth = activeMonitorInfo?.width ?: 1920,
                     desktopHeight = activeMonitorInfo?.height ?: 1080,
                     modifier = Modifier.fillMaxSize()
@@ -270,7 +288,7 @@ fun StreamingScreen(
             }
         }
 
-        if (activeMonitor !in firstFrames) {
+        if (state.activeMonitor !in state.firstFrames) {
             Box(
                 modifier = Modifier.fillMaxSize().background(AppOverlayBlack),
                 contentAlignment = Alignment.Center
@@ -284,11 +302,11 @@ fun StreamingScreen(
         }
 
         TouchpadLayer(
-            onSendMouseMove = onSendMouseMove,
-            onSendMouseButton = onSendMouseButton,
-            onSendMouseWheel = onSendMouseWheel,
-            onSetDragging = onSetDragging,
-            onReConfineCursor = onReConfineCursor,
+            onSendMouseMove = actions.onSendMouseMove,
+            onSendMouseButton = actions.onSendMouseButton,
+            onSendMouseWheel = actions.onSendMouseWheel,
+            onSetDragging = actions.onSetDragging,
+            onReConfineCursor = actions.onReConfineCursor,
             modifier = Modifier.fillMaxSize()
         )
 
@@ -301,10 +319,10 @@ fun StreamingScreen(
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Text(
-                            text = stringResource(R.string.ping_ms_format, rttMs.toInt()),
+                            text = stringResource(R.string.ping_ms_format, state.rttMs.toInt()),
                             color = when {
-                                rttMs < 20 -> AppGreenLight
-                                rttMs < 50 -> AppYellow
+                                state.rttMs < 20 -> AppGreenLight
+                                state.rttMs < 50 -> AppYellow
                                 else -> AppRedLight
                             },
                             fontSize = 10.sp,
@@ -325,15 +343,15 @@ fun StreamingScreen(
                         MenuIconButton(
                             icon = Icons.Default.Menu,
                             tint = when {
-                                rttMs < 20 -> AppGreenLight
-                                rttMs < 50 -> AppYellow
+                                state.rttMs < 20 -> AppGreenLight
+                                state.rttMs < 50 -> AppYellow
                                 else -> AppRedLight
                             },
-                            onClick = onToggleUI
+                            onClick = actions.onToggleUI
                         )
 
                         AnimatedVisibility(
-                            visible = showUI,
+                            visible = state.showUI,
                             enter = fadeIn() + expandVertically(expandFrom = Alignment.Top),
                             exit = fadeOut() + shrinkVertically(shrinkTowards = Alignment.Top)
                         ) {
@@ -341,25 +359,25 @@ fun StreamingScreen(
                                 MenuIconButton(
                                     icon = Icons.AutoMirrored.Filled.ArrowBack,
                                     tint = AppRedLight,
-                                    onClick = onPauseAndGoBack
+                                    onClick = actions.onPauseAndGoBack
                                 )
                                 MenuIconButton(
-                                    icon = if (isMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
-                                    tint = if (isMuted) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
-                                    onClick = onToggleMute
+                                    icon = if (state.isMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
+                                    tint = if (state.isMuted) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                                    onClick = actions.onToggleMute
                                 )
                                 MenuIconButton(
-                                    icon = if (isMicEnabled) Icons.Default.Mic else Icons.Default.MicOff,
-                                    tint = if (isMicEnabled) AppGreenLight else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    onClick = onToggleMic
+                                    icon = if (state.isMicEnabled) Icons.Default.Mic else Icons.Default.MicOff,
+                                    tint = if (state.isMicEnabled) AppGreenLight else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    onClick = actions.onToggleMic
                                 )
                                 MenuIconButton(
                                     icon = Icons.Default.VisibilityOff,
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                     onClick = {
-                                        onHideUI()
+                                        actions.onHideUI()
                                         uiHidden = true
-                                        Toast.makeText(context, context.getString(R.string.press_back_to_show_ui), Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(context, pressBackToShowUiMsg, Toast.LENGTH_SHORT).show()
                                     }
                                 )
 
@@ -394,81 +412,97 @@ fun StreamingScreen(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        // Quality presets (viewer: read-only, host: interactive)
-                        Surface(shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = if (isViewerMode) 0.5f else 0.9f)) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                horizontalArrangement = Arrangement.spacedBy(2.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                com.reka.remoteplay.core.util.QualityPreset.entries.forEach { preset ->
-                                    QualityPresetButton(
-                                        label = preset.displayName,
-                                        isActive = qualityPreset == preset,
-                                        onClick = { if (!isViewerMode) { onChangeQualityPreset(preset); showQualityPicker = false } }
-                                    )
+                        if (state.isViewerMode) {
+                            Surface(shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    listOf("low", "medium", "high").forEach { q ->
+                                        QualityPresetButton(
+                                            label = q.uppercase(),
+                                            isActive = state.viewerQuality == q,
+                                            onClick = { actions.onChangeViewerQuality(q); showQualityPicker = false }
+                                        )
+                                    }
                                 }
                             }
-                        }
-                        // FPS (viewer: read-only, host: interactive)
-                        Surface(shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = if (isViewerMode) 0.5f else 0.9f)) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                horizontalArrangement = Arrangement.spacedBy(2.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                availableFpsOptions.forEach { fps ->
-                                    FpsButton(
-                                        fps = fps,
-                                        isActive = streamFps == fps,
-                                        onClick = { if (!isViewerMode) { onChangeFps(fps); showQualityPicker = false } }
-                                    )
+                        } else {
+                            Surface(shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    com.reka.remoteplay.core.util.QualityPreset.entries.forEach { preset ->
+                                        val height = state.qualityPresetHeights[preset]
+                                        val label = if (height != null) "${preset.displayName} (${height}p)" else preset.displayName
+                                        QualityPresetButton(
+                                            label = label,
+                                            isActive = state.qualityPreset == preset,
+                                            onClick = { actions.onChangeQualityPreset(preset); showQualityPicker = false }
+                                        )
+                                    }
+                                }
+                            }
+                            Surface(shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    state.availableFpsOptions.forEach { fps ->
+                                        FpsButton(
+                                            fps = fps,
+                                            isActive = state.streamFps == fps,
+                                            onClick = { actions.onChangeFps(fps); showQualityPicker = false }
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
                 }
 
-                // Hide the floating keyboard button if a physical keyboard is connected
                 if (!isHardwareKeyboardAvailable) {
                     FloatingCircleButton(
                         icon = Icons.Default.Keyboard,
                         tint = MaterialTheme.colorScheme.onSurface,
-                        onClick = onToggleKeyboard,
+                        onClick = actions.onToggleKeyboard,
                         modifier = Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 12.dp)
                     )
                 }
 
-                if (monitors.size > 1) {
+                if (state.monitors.size > 1) {
                     MonitorTabBar(
-                        monitors = monitors,
-                        activeIndex = activeMonitor,
-                        onSelect = onSwitchMonitor,
+                        monitors = state.monitors,
+                        activeIndex = state.activeMonitor,
+                        onSelect = actions.onSwitchMonitor,
                         modifier = Modifier.align(Alignment.BottomStart).padding(start = 12.dp, bottom = 12.dp)
                     )
                 }
 
-                // Joysticks hidden when vertical menu is expanded
                 AnimatedVisibility(
-                    visible = !showUI,
+                    visible = !state.showUI,
                     enter = fadeIn(),
                     exit = fadeOut(),
                     modifier = Modifier.align(Alignment.CenterStart).padding(start = 12.dp)
                 ) {
                     VirtualJoystick(
-                        onDelta = { _, dy -> zoomDelta = dy },
-                        onRelease = { zoomDelta = 0f }
+                        onDelta = { _, dy -> zoomDelta.floatValue = dy },
+                        onRelease = { zoomDelta.floatValue = 0f }
                     )
                 }
                 AnimatedVisibility(
-                    visible = !showUI,
+                    visible = !state.showUI,
                     enter = fadeIn(),
                     exit = fadeOut(),
                     modifier = Modifier.align(Alignment.CenterEnd).padding(end = 12.dp)
                 ) {
                     VirtualJoystick(
-                        onDelta = { dx, dy -> moveDeltaX = dx; moveDeltaY = dy },
-                        onRelease = { moveDeltaX = 0f; moveDeltaY = 0f }
+                        onDelta = { dx, dy -> moveDeltaX.floatValue = dx; moveDeltaY.floatValue = dy },
+                        onRelease = { moveDeltaX.floatValue = 0f; moveDeltaY.floatValue = 0f }
                     )
                 }
             }
@@ -659,11 +693,23 @@ private fun MonitorTabBar(monitors: List<MonitorInfoDto>, activeIndex: Int, onSe
     }
 }
 
-private fun charToVirtualKey(ch: Char): Int = when {
-    ch in 'a'..'z' -> 0x41 + (ch - 'a')
-    ch in 'A'..'Z' -> 0x41 + (ch - 'A')
-    ch in '0'..'9' -> 0x30 + (ch - '0')
-    else -> when (ch) {
-        ' ' -> 0x20; '\n', '\r' -> 0x0D; '\t' -> 0x09; '-' -> 0xBD; '=' -> 0xBB; '[' -> 0xDB; ']' -> 0xDD; '\\' -> 0xDC; ';' -> 0xBA; '\'' -> 0xDE; '`' -> 0xC0; ',' -> 0xBC; '.' -> 0xBE; '/' -> 0xBF; else -> 0
-    }
+private fun charToVirtualKey(ch: Char): Int = when (ch) {
+    in 'a'..'z' -> 0x41 + (ch - 'a')
+    in 'A'..'Z' -> 0x41 + (ch - 'A')
+    in '0'..'9' -> 0x30 + (ch - '0')
+    ' ' -> 0x20
+    '\n', '\r' -> 0x0D
+    '\t' -> 0x09
+    '-' -> 0xBD
+    '=' -> 0xBB
+    '[' -> 0xDB
+    ']' -> 0xDD
+    '\\' -> 0xDC
+    ';' -> 0xBA
+    '\'' -> 0xDE
+    '`' -> 0xC0
+    ',' -> 0xBC
+    '.' -> 0xBE
+    '/' -> 0xBF
+    else -> 0
 }

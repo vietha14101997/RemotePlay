@@ -1,5 +1,6 @@
 package com.reka.remoteplay.feature.connection.presentation
 
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -17,7 +18,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import com.reka.remoteplay.R
@@ -31,6 +32,7 @@ import com.reka.remoteplay.core.util.EncoderResolutionCalculator
 import com.reka.remoteplay.core.util.QualityPreset
 import com.reka.remoteplay.core.util.buildFpsOptions
 import com.reka.remoteplay.feature.connection.domain.model.ConnectionState
+import kotlinx.coroutines.delay
 
 @Composable
 fun ConfigReviewScreen(
@@ -55,7 +57,6 @@ fun ConfigReviewScreen(
     val isTurnRelay = webRtcConnectionType == "relay"
     val maxMonitors = serverInfo.monitors.size
 
-    // Use saved settings as defaults, clamped to server capabilities.
     val maxSelectableMonitors = if (maxMonitors <= 3) 3 else maxMonitors
     var selectedMonitors by remember(savedMonitors, maxSelectableMonitors) {
         mutableIntStateOf(savedMonitors.coerceIn(1, maxSelectableMonitors))
@@ -68,7 +69,6 @@ fun ConfigReviewScreen(
     val scaleOptions = listOf(100, 125, 150)
     var selectedScale by remember(savedWindowsScale) { mutableIntStateOf(savedWindowsScale) }
 
-    // TURN relay: limit FPS + force Performance preset to save VPS bandwidth
     if (isTurnRelay) {
         if (selectedFps > 30) selectedFps = 30
         if (qualityPreset != QualityPreset.Performance) onQualityPresetChanged(QualityPreset.Performance)
@@ -76,20 +76,23 @@ fun ConfigReviewScreen(
 
     val settingsEnabled = connectionState is ConnectionState.ConfiguringSettings && !isPaused
 
-    // Double-press back to disconnect
-    val context = androidx.compose.ui.platform.LocalContext.current
+    // Fixed Toast logic
+    val context = LocalContext.current
+    val pressBackToDisconnectMsg = stringResource(R.string.press_back_to_disconnect)
     var backPressedOnce by remember { mutableStateOf(false) }
+    
     BackHandler {
         if (backPressedOnce) {
             onBack()
         } else {
             backPressedOnce = true
-            android.widget.Toast.makeText(context, context.getString(R.string.press_back_to_disconnect), android.widget.Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, pressBackToDisconnectMsg, Toast.LENGTH_SHORT).show()
         }
     }
+    
     LaunchedEffect(backPressedOnce) {
         if (backPressedOnce) {
-            kotlinx.coroutines.delay(2000)
+            delay(2000)
             backPressedOnce = false
         }
     }
@@ -109,7 +112,6 @@ fun ConfigReviewScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(20.dp)
         ) {
-            // Header
             Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onBack) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back), tint = AppTextTertiary)
@@ -119,7 +121,6 @@ fun ConfigReviewScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Server Info Card
             InfoCard(
                 title = stringResource(R.string.server),
                 icon = Icons.Default.Computer,
@@ -134,7 +135,6 @@ fun ConfigReviewScreen(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Network Info Card — use client-detected connectionType
             val networkInfo = suggestedConfig.networkInfo
             InfoCard(
                 title = stringResource(R.string.network),
@@ -150,7 +150,6 @@ fun ConfigReviewScreen(
                 }
             )
 
-            // TURN relay warning
             if (isTurnRelay) {
                 Spacer(modifier = Modifier.height(8.dp))
                 Card(
@@ -172,7 +171,6 @@ fun ConfigReviewScreen(
 
             Spacer(modifier = Modifier.height(20.dp))
 
-            // Stream Settings Card
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
@@ -182,7 +180,6 @@ fun ConfigReviewScreen(
                     Text(stringResource(R.string.stream_settings), fontWeight = FontWeight.SemiBold, color = AppTextPrimary, fontSize = 16.sp)
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    // Bind Mobile Screen toggle
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
@@ -217,7 +214,6 @@ fun ConfigReviewScreen(
 
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    // Quality Preset selector (visible in both modes)
                     Text("Quality Preset", color = AppTextTertiary, fontSize = 13.sp)
                     Spacer(modifier = Modifier.height(4.dp))
                     Row(
@@ -245,7 +241,6 @@ fun ConfigReviewScreen(
                         }
                     }
 
-                    // Show encoder resolution preview
                     val previewW: Int
                     val previewH: Int
                     if (bindMobileScreen) {
@@ -261,7 +256,7 @@ fun ConfigReviewScreen(
                     }
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        "Encoder: ${previewW} × ${previewH}",
+                        "Encoder: $previewW × $previewH",
                         color = AppTextQuaternary,
                         fontSize = 12.sp
                     )
@@ -269,7 +264,6 @@ fun ConfigReviewScreen(
                     if (!bindMobileScreen) {
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    // Monitor count
                     Text(stringResource(R.string.monitors_label), color = AppTextTertiary, fontSize = 13.sp)
                     Spacer(modifier = Modifier.height(4.dp))
                     if (maxSelectableMonitors <= 3) {
@@ -320,11 +314,10 @@ fun ConfigReviewScreen(
                             }
                         }
                     }
-                    } // end if (!bindMobileScreen) — monitors hidden
+                    }
 
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    // FPS (always visible — user can choose lower FPS to save GPU)
                     Text(stringResource(R.string.frame_rate), color = AppTextTertiary, fontSize = 13.sp)
                     Spacer(modifier = Modifier.height(4.dp))
                     Row(
@@ -354,7 +347,6 @@ fun ConfigReviewScreen(
 
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    // Windows Scale
                     Text("Windows Scale", color = AppTextTertiary, fontSize = 13.sp)
                     Spacer(modifier = Modifier.height(4.dp))
                     Row(
@@ -384,7 +376,6 @@ fun ConfigReviewScreen(
 
                     Spacer(modifier = Modifier.height(8.dp))
 
-                    // Bitrate info (read-only)
                     Text(
                         stringResource(R.string.bitrate_format, suggestedConfig.bitrateKbps / 1000),
                         color = AppTextQuaternary,
@@ -395,7 +386,6 @@ fun ConfigReviewScreen(
 
             Spacer(modifier = Modifier.height(24.dp))
 
-            // Start / Resume button
             val isInProgress = connectionState !is ConnectionState.ConfiguringSettings && !isPaused
             val buttonText = when {
                 isPaused -> stringResource(R.string.resume)

@@ -3,6 +3,7 @@ package com.reka.remoteplay.feature.streaming.presentation
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.hilt.navigation.compose.hiltViewModel
 
 @Composable
@@ -27,7 +28,7 @@ fun StreamingRoute(
     val qualityPreset by viewModel.qualityPreset.collectAsState()
     val viewerQuality by viewModel.viewerQuality.collectAsState()
 
-    StreamingScreen(
+    val state = StreamingUiState(
         monitors = monitors,
         activeMonitor = activeMonitor,
         showUI = showUI,
@@ -40,32 +41,42 @@ fun StreamingRoute(
         cursorState = cursorState,
         isDragging = isDragging,
         cursorImage = cursorImage,
-        onBack = onBack,
-        onInitStreaming = viewModel::initStreaming,
-        onPauseAndGoBack = viewModel::pauseAndGoBack,
-        onSwitchMonitor = viewModel::switchMonitor,
-        onToggleUI = viewModel::toggleUI,
-        onHideUI = viewModel::hideUI,
-        onToggleMute = viewModel::toggleMute,
-        onToggleMic = viewModel::toggleMic,
-        onToggleKeyboard = viewModel::toggleKeyboard,
-        onSendKey = viewModel::sendKey,
-        onSendText = viewModel::sendText,
-        onSendMouseMove = viewModel::sendMouseMove,
-        onSendMouseButton = viewModel::sendMouseButton,
-        onSendMouseWheel = viewModel::sendMouseWheel,
-        onSetDragging = viewModel::setDragging,
-        onReConfineCursor = viewModel::reConfineCursor,
         streamFps = streamFps,
         availableFpsOptions = availableFpsOptions,
-        onChangeFps = viewModel::changeFps,
-        onSurfaceCreated = { viewModel.videoDecoderManager.setActiveSurface(it) },
-        onSurfaceDestroyed = { viewModel.videoDecoderManager.onSurfaceDestroyed() },
         qualityPreset = qualityPreset,
         qualityPresetHeights = viewModel.qualityPresetHeights,
-        onChangeQualityPreset = viewModel::changeQualityPreset,
         isViewerMode = false, // TODO: pass from ConnectionViewModel via nav args
-        viewerQuality = viewerQuality,
-        onChangeViewerQuality = viewModel::setViewerQuality
+        viewerQuality = viewerQuality
+    )
+
+    val actions = remember(viewModel, onBack) {
+        StreamingUiActions(
+            onBack = onBack,
+            onInitStreaming = viewModel::initStreaming,
+            onPauseAndGoBack = viewModel::pauseAndGoBack,
+            onSwitchMonitor = viewModel::switchMonitor,
+            onToggleUI = viewModel::toggleUI,
+            onHideUI = viewModel::hideUI,
+            onToggleMute = viewModel::toggleMute,
+            onToggleMic = viewModel::toggleMic,
+            onToggleKeyboard = viewModel::toggleKeyboard,
+            onSendKey = viewModel::sendKey,
+            onSendText = viewModel::sendText,
+            onSendMouseMove = viewModel::sendMouseMove,
+            onSendMouseButton = viewModel::sendMouseButton,
+            onSendMouseWheel = viewModel::sendMouseWheel,
+            onSetDragging = viewModel::setDragging,
+            onReConfineCursor = viewModel::reConfineCursor,
+            onChangeFps = viewModel::changeFps,
+            onChangeQualityPreset = viewModel::changeQualityPreset,
+            onChangeViewerQuality = viewModel::setViewerQuality
+        )
+    }
+
+    StreamingScreen(
+        state = state,
+        actions = actions,
+        onSurfaceCreated = { viewModel.videoDecoderManager.setActiveSurface(it) },
+        onSurfaceDestroyed = { viewModel.videoDecoderManager.onSurfaceDestroyed() }
     )
 }

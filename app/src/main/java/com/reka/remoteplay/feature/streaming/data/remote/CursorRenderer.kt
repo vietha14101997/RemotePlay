@@ -139,7 +139,7 @@ class CursorRenderer @Inject constructor() {
             }
             cursorImageCache[cursorId] = entry
 
-            // Always apply newest cursor image
+            // Always apply the newest cursor image
             _cursorImage.value = entry
             Log.d(TAG, "Cursor image: id=$cursorId ${w}x${h} hotspot=($hotspotX,$hotspotY) bytes=${rgbaBytes.size}")
         } catch (e: Exception) {

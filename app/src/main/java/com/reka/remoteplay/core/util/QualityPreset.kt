@@ -12,13 +12,6 @@ enum class QualityPreset {
     Balanced,
     Quality;
 
-    val label: String
-        get() = when (this) {
-            Performance -> "P"
-            Balanced -> "B"
-            Quality -> "Q"
-        }
-
     val displayName: String
         get() = name
 }

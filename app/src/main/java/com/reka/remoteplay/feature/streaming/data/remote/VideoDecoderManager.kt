@@ -88,7 +88,7 @@ class VideoDecoderManager @Inject constructor(
         activeDecoder?.release()
         val decoder = VideoDecoder(monitorIndex, codecString, targetFps)
         decoder.onFirstFrame = {
-            _firstFrameReceived.value = _firstFrameReceived.value + monitorIndex
+            _firstFrameReceived.value += monitorIndex
             Log.i(TAG, "★ Monitor $monitorIndex FIRST FRAME RENDERED ★")
         }
         decoder.onDecoderReady = {
@@ -97,7 +97,7 @@ class VideoDecoderManager @Inject constructor(
         }
         // C3: Track server-side resolution changes (e.g. quality preset switch via update_config).
         // The server's TextureResizer recalculates encoded resolution and the new dimensions are
-        // signalled via the SPS/PPS in the next codec config frame → MediaCodec fires this callback.
+        // signaled via the SPS/PPS in the next codec config frame → MediaCodec fires this callback.
         decoder.onOutputFormatChanged = { newW, newH ->
             Log.i(TAG, "Monitor $monitorIndex resolution changed to ${newW}x${newH} (server quality change)")
         }
