@@ -58,6 +58,10 @@ class WebRtcManager @Inject constructor(
     private val _connectionType = MutableStateFlow("unknown")
     val connectionType: StateFlow<String> = _connectionType
 
+    // Track ICE state for resilience
+    private val _iceConnectionState = MutableStateFlow(PeerConnection.IceConnectionState.NEW)
+    val iceConnectionState: StateFlow<PeerConnection.IceConnectionState> = _iceConnectionState
+
     // ICE candidate callbacks (to send via WebSocket)
     var onMainIceCandidate: ((IceCandidate) -> Unit)? = null
     var onVideoIceCandidate: ((Int, IceCandidate) -> Unit)? = null
@@ -124,6 +128,7 @@ class WebRtcManager @Inject constructor(
 
             override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) {
                 Log.d(TAG, "Main PC ICE state: $state")
+                _iceConnectionState.value = state
                 if (state == PeerConnection.IceConnectionState.CONNECTED) {
                     detectConnectionType()
                 }
@@ -333,6 +338,10 @@ class WebRtcManager @Inject constructor(
     }
 
     fun dispose() {
+        onVideoFrame = null
+        onMainIceCandidate = null
+        onVideoIceCandidate = null
+
         videoDcs.values.forEach { it.close() }
         videoDcs.clear()
         videoPcs.values.forEach { it.dispose() }

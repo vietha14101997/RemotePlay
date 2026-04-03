@@ -41,6 +41,7 @@ class StreamingViewModel @Inject constructor(
     val rttMs = webRtcManager.p2pRttMs
     val cursorState = cursorRenderer.cursorState
     val cursorImage = cursorRenderer.cursorImage
+    val iceConnectionState = webRtcManager.iceConnectionState
 
     private val _showUI = MutableStateFlow(false)
     val showUI: StateFlow<Boolean> = _showUI.asStateFlow()
@@ -223,6 +224,12 @@ class StreamingViewModel @Inject constructor(
     private val _showKeyboard = MutableStateFlow(false)
     val showKeyboard: StateFlow<Boolean> = _showKeyboard.asStateFlow()
 
+    private var mouseSensitivity = 1.0f
+
+    fun setMouseSensitivity(sensitivity: Float) {
+        mouseSensitivity = sensitivity
+    }
+
     fun toggleKeyboard() {
         _showKeyboard.value = !_showKeyboard.value
     }
@@ -258,7 +265,9 @@ class StreamingViewModel @Inject constructor(
     }
 
     fun sendMouseMove(dx: Short, dy: Short) {
-        webRtcManager.sendInput(InputProtocol.encodeMouseMove(dx, dy))
+        val scaledDx = (dx * mouseSensitivity).toInt().toShort()
+        val scaledDy = (dy * mouseSensitivity).toInt().toShort()
+        webRtcManager.sendInput(InputProtocol.encodeMouseMove(scaledDx, scaledDy))
     }
 
     fun sendMouseButton(button: Byte, down: Boolean) {
