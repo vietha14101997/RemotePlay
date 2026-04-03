@@ -34,7 +34,6 @@ fun LoginScreen(
     onSubmit: () -> Unit,
     onSkip: () -> Unit
 ) {
-    var showAdvanced by remember { mutableStateOf(false) }
     var passwordVisible by remember { mutableStateOf(false) }
 
     Box(
@@ -155,53 +154,6 @@ fun LoginScreen(
             }
 
             Spacer(modifier = Modifier.height(12.dp))
-
-            // Advanced relay URL
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(containerColor = AppSurface)
-            ) {
-                Column(modifier = Modifier.padding(horizontal = 20.dp)) {
-                    TextButton(
-                        onClick = { showAdvanced = !showAdvanced },
-                        modifier = Modifier.fillMaxWidth(),
-                        contentPadding = PaddingValues(vertical = 12.dp)
-                    ) {
-                        Icon(
-                            if (showAdvanced) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                            contentDescription = null,
-                            tint = AppTextTertiary,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Advanced — Relay Server", color = AppTextTertiary, fontSize = 13.sp)
-                        Spacer(modifier = Modifier.weight(1f))
-                    }
-                    AnimatedVisibility(visible = showAdvanced) {
-                        Column {
-                            OutlinedTextField(
-                                value = state.relayUrl,
-                                onValueChange = onRelayUrlChange,
-                                label = { Text("Relay URL", color = AppTextTertiary, fontSize = 13.sp) },
-                                leadingIcon = { Icon(Icons.Default.Link, null, tint = AppTextTertiary) },
-                                trailingIcon = {
-                                    if (state.relayUrl.isNotEmpty()) {
-                                        IconButton(onClick = { onRelayUrlChange("") }) {
-                                            Icon(Icons.Default.Clear, "Clear", tint = AppTextTertiary)
-                                        }
-                                    }
-                                },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                                colors = loginFieldColors()
-                            )
-                            Spacer(modifier = Modifier.height(16.dp))
-                        }
-                    }
-                }
-            }
 
             // Error display
             AnimatedVisibility(visible = state.error != null) {
