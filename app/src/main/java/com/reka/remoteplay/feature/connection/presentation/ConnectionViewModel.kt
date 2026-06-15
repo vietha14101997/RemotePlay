@@ -73,6 +73,11 @@ class ConnectionViewModel @Inject constructor(
     // Phase 2 data
     val monitors = phaseTwoHandler.monitors
     val webRtcConnectionType = phaseTwoHandler.webRtcConnectionType
+    val webRtcIceHostCount = webRtcManager.iceHostCount
+    val webRtcIceSrflxCount = webRtcManager.iceSrflxCount
+    val webRtcIceRelayCount = webRtcManager.iceRelayCount
+    val webRtcIcePrflxCount = webRtcManager.icePrflxCount
+    val webRtcIceGatherDurationMs = webRtcManager.iceGatherDurationMs
 
     // Saved stream settings
     val savedMonitors = preferences.streamMonitors

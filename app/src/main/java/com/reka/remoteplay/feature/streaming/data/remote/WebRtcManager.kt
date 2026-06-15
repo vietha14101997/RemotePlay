@@ -22,10 +22,13 @@ class WebRtcManager @Inject constructor(
 ) {
     private var factory: PeerConnectionFactory? = null
     // STUN only by default — enables P2P across different networks without TURN bandwidth cost.
+    // Multiple STUN providers for ISP-blocking redundancy: Google + Cloudflare + Nextcloud.
     // TURN servers can be added via setIceServers() when needed (4G fallback).
     private var iceServers: List<PeerConnection.IceServer> = listOf(
         PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
-        PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer()
+        PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer(),
+        PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer(),
+        PeerConnection.IceServer.builder("stun:stun.nextcloud.com:3478").createIceServer()
     )
 
     // Main PC (audio + control DataChannels)
@@ -58,9 +61,28 @@ class WebRtcManager @Inject constructor(
     private val _connectionType = MutableStateFlow("unknown")
     val connectionType: StateFlow<String> = _connectionType
 
+    // ICE candidate counters (H=host, S=server-reflexive, R=relay, P=peer-reflexive).
+    // Used to diagnose cross-NAT connectivity. Reset on each new connection.
+    private val _iceHostCount = MutableStateFlow(0)
+    val iceHostCount: StateFlow<Int> = _iceHostCount
+    private val _iceSrflxCount = MutableStateFlow(0)
+    val iceSrflxCount: StateFlow<Int> = _iceSrflxCount
+    private val _iceRelayCount = MutableStateFlow(0)
+    val iceRelayCount: StateFlow<Int> = _iceRelayCount
+    private val _icePrflxCount = MutableStateFlow(0)
+    val icePrflxCount: StateFlow<Int> = _icePrflxCount
+
+    // ICE gather duration in ms (time from first candidate to end-of-candidates)
+    private val _iceGatherDurationMs = MutableStateFlow(0L)
+    val iceGatherDurationMs: StateFlow<Long> = _iceGatherDurationMs
+
     // Track ICE state for resilience
     private val _iceConnectionState = MutableStateFlow(PeerConnection.IceConnectionState.NEW)
     val iceConnectionState: StateFlow<PeerConnection.IceConnectionState> = _iceConnectionState
+
+    // Internal: gather start time
+    private var gatherStartMs: Long = 0L
+    private var gatherRunning: Boolean = false
 
     // ICE candidate callbacks (to send via WebSocket)
     var onMainIceCandidate: ((IceCandidate) -> Unit)? = null
@@ -105,6 +127,9 @@ class WebRtcManager @Inject constructor(
             rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
+            // Pre-gather 4 candidates so peer connection reuses already-known
+            // srflx candidates on reconnect, reducing ICE gather time.
+            iceCandidatePoolSize = 4
             // Absolute minimum jitter buffer for lowest audio latency.
             // User reports ~100ms audio lag behind video (audio continues after video shows pause).
             // 10ms Opus frames × 2 packets = 20ms max buffer.
@@ -119,11 +144,13 @@ class WebRtcManager @Inject constructor(
     fun createMainPcOffer(callback: (String) -> Unit) {
         val f = factory ?: return
         val config = buildRtcConfig()
+        resetGatherCounters()
 
         mainPc = f.createPeerConnection(config, object : PeerConnectionObserverAdapter() {
             override fun onIceCandidate(candidate: IceCandidate) {
                 Log.d(TAG, "Main PC ICE candidate: ${candidate.sdp.take(60)}")
                 onMainIceCandidate?.invoke(candidate)
+                countIceCandidateType(candidate.sdp)
             }
 
             override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) {
@@ -216,11 +243,13 @@ class WebRtcManager @Inject constructor(
     fun handleVideoOffer(monitorIndex: Int, offerSdp: String, callback: (String) -> Unit) {
         val f = factory ?: return
         val config = buildRtcConfig()
+        if (!gatherRunning) resetGatherCounters()
 
         val pc = f.createPeerConnection(config, object : PeerConnectionObserverAdapter() {
             override fun onIceCandidate(candidate: IceCandidate) {
                 Log.d(TAG, "Video PC[$monitorIndex] ICE candidate")
                 onVideoIceCandidate?.invoke(monitorIndex, candidate)
+                countIceCandidateType(candidate.sdp)
             }
 
             override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) {
@@ -351,6 +380,48 @@ class WebRtcManager @Inject constructor(
         mainPc?.dispose()
         mainPc = null
         Log.d(TAG, "Disposed all PeerConnections")
+    }
+
+    // ==================== ICE candidate diagnostics ====================
+
+    private fun resetGatherCounters() {
+        _iceHostCount.value = 0
+        _iceSrflxCount.value = 0
+        _iceRelayCount.value = 0
+        _icePrflxCount.value = 0
+        _iceGatherDurationMs.value = 0L
+        gatherStartMs = System.currentTimeMillis()
+        gatherRunning = true
+    }
+
+    private fun countIceCandidateType(sdp: String) {
+        if (sdp.isEmpty()) return
+        if (!gatherRunning) {
+            gatherStartMs = System.currentTimeMillis()
+            gatherRunning = true
+        }
+        when {
+            sdp.contains(" typ host ") -> _iceHostCount.value = _iceHostCount.value + 1
+            sdp.contains(" typ srflx ") -> _iceSrflxCount.value = _iceSrflxCount.value + 1
+            sdp.contains(" typ relay ") -> _iceRelayCount.value = _iceRelayCount.value + 1
+            sdp.contains(" typ prflx ") -> _icePrflxCount.value = _icePrflxCount.value + 1
+        }
+    }
+
+    /**
+     * Called by PhaseTwoHandler when "end-of-candidates" is received from the
+     * remote side. Stops gather timer and finalises duration metric.
+     */
+    fun onEndOfCandidates() {
+        if (!gatherRunning) return
+        val ms = System.currentTimeMillis() - gatherStartMs
+        _iceGatherDurationMs.value = ms
+        gatherRunning = false
+        val h = _iceHostCount.value
+        val s = _iceSrflxCount.value
+        val r = _iceRelayCount.value
+        val p = _icePrflxCount.value
+        Log.d(TAG, "ICE gathered (self): H=$h S=$s R=$r P=$p in ${ms}ms")
     }
 }
 

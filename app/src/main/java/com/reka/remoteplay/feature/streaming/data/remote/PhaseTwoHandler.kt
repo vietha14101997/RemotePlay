@@ -3,6 +3,7 @@ package com.reka.remoteplay.feature.streaming.data.remote
 import android.util.Log
 import com.reka.remoteplay.core.model.*
 import com.reka.remoteplay.core.util.QualityPreset
+import com.reka.remoteplay.core.network.MdnsResolver
 import com.reka.remoteplay.core.network.MessageParser
 import com.reka.remoteplay.core.network.WebSocketClient
 import com.reka.remoteplay.feature.connection.domain.model.ConnectionState
@@ -17,7 +18,8 @@ class PhaseTwoHandler @Inject constructor(
     private val webSocketClient: WebSocketClient,
     private val connectionStateRepo: ConnectionStateRepository,
     private val webRtcManager: WebRtcManager,
-    private val cursorRenderer: CursorRenderer
+    private val cursorRenderer: CursorRenderer,
+    private val mdnsResolver: MdnsResolver
 ) {
     private val _monitors = MutableStateFlow<List<MonitorInfoDto>>(emptyList())
     val monitors: StateFlow<List<MonitorInfoDto>> = _monitors.asStateFlow()
@@ -137,13 +139,19 @@ class PhaseTwoHandler @Inject constructor(
             "candidate" -> {
                 // ICE candidate for main PC
                 val msg = MessageParser.parse<CandidateMessage>(text) ?: return
-                webRtcManager.addMainIceCandidate(null, 0, msg.candidate)
+                if (msg.candidate == "end-of-candidates") {
+                    webRtcManager.onEndOfCandidates()
+                } else {
+                    val resolved = mdnsResolver.resolveIfNeeded(msg.candidate)
+                    webRtcManager.addMainIceCandidate(null, 0, resolved)
+                }
             }
 
             "video_candidate" -> {
                 // ICE candidate for a video PC
                 val msg = MessageParser.parse<VideoCandidateMessage>(text) ?: return
-                webRtcManager.addVideoIceCandidate(msg.monitorIndex, null, 0, msg.candidate)
+                val resolved = mdnsResolver.resolveIfNeeded(msg.candidate)
+                webRtcManager.addVideoIceCandidate(msg.monitorIndex, null, 0, resolved)
             }
 
             "ice_ready" -> {

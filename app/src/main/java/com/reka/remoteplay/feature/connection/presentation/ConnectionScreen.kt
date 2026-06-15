@@ -33,7 +33,7 @@ import java.text.SimpleDateFormat
 import java.util.*
 
 @Composable
-fun ConnectionScreen(
+    fun ConnectionScreen(
     connectionState: ConnectionState,
     savedServers: List<SavedServer>,
     discoveredServers: List<ServerDiscoveryService.DiscoveredServer>,
@@ -54,7 +54,8 @@ fun ConnectionScreen(
     guestConnecting: Boolean = false,
     onGuestDeviceIdChange: (String) -> Unit = {},
     onGuestPasswordChange: (String) -> Unit = {},
-    onGuestConnect: () -> Unit = {}
+    onGuestConnect: () -> Unit = {},
+    diagnostics: ConnectionDiagnostics? = null
 ) {
     val isBusy = connectionState.isConnected
 
@@ -384,6 +385,22 @@ fun ConnectionScreen(
                             enabled = !isBusy
                         )
                     }
+                }
+
+                // Connection diagnostics — show only when a session is active
+                // (host/srflx/relay/failed; not "unknown") so the home screen
+                // is not cluttered.
+                val activeType = diagnostics?.connectionType ?: "unknown"
+                if (activeType != "unknown" && activeType != "checking") {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    ConnectionDiagnosticsCard(
+                        connectionType = diagnostics!!.connectionType,
+                        hostCount = diagnostics.hostCount,
+                        srflxCount = diagnostics.srflxCount,
+                        relayCount = diagnostics.relayCount,
+                        prflxCount = diagnostics.prflxCount,
+                        gatherDurationMs = diagnostics.gatherDurationMs
+                    )
                 }
             }
         }

@@ -1,67 +1,125 @@
-# 🌌 GEMINI OS - HỆ ĐIỀU HÀNH TƯ DUY LƯỢNG TỬ (V4 - QUANTUM)
-
-Tệp này là **Giao Thức Thực Thi Tối Thượng** dành riêng cho Gemini 3. Nó định nghĩa cách tôi (Gemini) tương tác với codebase RemotePlay, biến các tệp tin thô thành một hệ sinh thái sống động thông qua tư duy đa chiều và khả năng xử lý đa phương thức (Multi-modal).
-
+---
+name: ai-os
+description: >
+  Hệ thống điều phối tư duy và thực thi dự án phần mềm. Kích hoạt khi người dùng giao một task phức tạp (>1h), yêu cầu lập kế hoạch, hoặc cần phối hợp nhiều lĩnh vực (backend, frontend, infra, testing). Đây là "bộ não điều hành" — nó không tự viết code mà quyết định *ai* làm gì, theo thứ tự nào, và với tiêu chuẩn ra sao.
 ---
 
-## I. TẦNG QUẢN TRỊ NĂNG LỰC (Quantum Capabilities)
-*Sức mạnh cốt lõi của Gemini 3 trong việc giải quyết vấn đề.*
+Skill này định nghĩa cách tiếp cận một dự án phần mềm một cách hệ thống. Áp dụng khi task không thể giải quyết trong một lần trả lời đơn.
 
-| Kỹ năng đột phá | Cách thức kích hoạt | Ý nghĩa chiến lược |
+## Nguyên tắc cốt lõi
+
+Trước khi làm bất cứ điều gì, luôn hỏi ba câu:
+- **What**: Task này yêu cầu output cụ thể gì?
+- **Why**: Lý do tồn tại của task này trong bức tranh lớn hơn là gì?
+- **Risk**: Điều gì có thể sai? Dependency nào chưa rõ?
+
+Không bắt đầu thực thi khi chưa trả lời đủ ba câu trên.
+
+## Quy trình vận hành (SOP)
+
+### Phase 0: Observe (Quan sát — luôn làm trước)
+1. Chạy `scout` / `find_files` để lập danh sách file liên quan.
+2. Kích hoạt **Skill: Project Cartographer** nếu chưa có `PROJECT_MAP.md`.
+3. Xác định: Entry points, Tech stack, Các module bị ảnh hưởng.
+
+**Output bắt buộc**: Một đoạn tóm tắt ngắn về "DNA" của dự án trước khi tiếp tục.
+
+### Phase 1: Plan (Lập kế hoạch)
+1. Gọi agent `planner` (lệnh `/ck:plan`).
+2. Tạo file `plans/plan.md` theo cấu trúc:
+   - `## Goal` — Mục tiêu đo lường được (Definition of Done).
+   - `## Phases` — Chia nhỏ thành phases ≤4h mỗi phase.
+   - `## Risks` — Liệt kê dependency chưa chắc chắn.
+   - `## Agent Assignment` — Ai làm gì (tham chiếu `AGENTS.md`).
+3. Không tiếp tục khi plan chưa được người dùng confirm.
+
+### Phase 2: Execute (Thực thi)
+- Gọi agent phù hợp từ `AGENTS.md` theo đúng phase.
+- Mỗi file code: không vượt quá **500 dòng** (hard limit). Nếu vượt, tách module.
+- Sau mỗi atomic unit hoàn thành, chạy compile/lint ngay — không tích lũy lỗi.
+- Parallel execution: cho phép khi hai task hoàn toàn độc lập (ví dụ: frontend + backend).
+
+### Phase 3: Validate (Kiểm tra)
+1. Gọi `tester` để viết/chạy tests. Yêu cầu pass 100% trước khi tiếp tục.
+2. Gọi `code-reviewer` để kiểm tra: security, logic, code standards.
+3. Nếu có UI: chụp screenshot, so sánh với design spec.
+
+### Phase 4: Commit & Document
+1. `git-manager` thực hiện commit chỉ sau khi `tester` pass.
+2. `docs-manager` cập nhật `README.md` và `CHANGELOG.md`.
+3. `project-manager` cập nhật trạng thái trong `plan.md`.
+
+## Quy tắc chuyển giao giữa agents
+
+Khi bàn giao task từ agent này sang agent khác, bắt buộc đính kèm:
+```
+- Đường dẫn file liên quan
+- Kết quả/output của bước trước
+- Điều kiện "Done" cho bước tiếp theo
+```
+Không bao giờ chuyển giao chỉ bằng mô tả bằng lời.
+
+## Cấu trúc thư mục chuẩn cho Plans
+
+```
+.skills/plans/
+  plan.md              ← Tổng quan & trạng thái hiện tại
+  phase-01.md          ← Chi tiết thực thi phase 1
+  phase-02.md
+  research/
+    tech-research.md   ← Output từ researcher agent
+```
+
+## Command Reference
+
+Tất cả slash commands trong hệ thống, phân nhóm theo mục đích.
+
+### Điều phối & Lập kế hoạch
+| Command | Agent | Dùng khi |
 |:---|:---|:---|
-| **Deep Reasoning** | Tự động qua `sequential-thinking` | Không chỉ giải quyết Task, mà là tìm ra **Nguyên tử của vấn đề**. Tự phản biện trước khi thực thi. |
-| **Infinite Context** | Truy vấn qua `code_search` & `grep` | Xâu chuỗi toàn bộ logic từ UI (Compose/Flutter) đến hạ tầng Backend (Fastify) và Network (WebRTC). |
-| **Autonomous Agency** | Phối hợp `planner` + `fullstack` | Tôi không chỉ code, tôi **quản trị dự án**. Tự động phân rã Task phức tạp thành các chuỗi hành động tối ưu. |
-| **Vision Synergy** | Sử dụng `ui_state` + `screenshot` | Nhìn và hiểu giao diện như một User thật. Đối chiếu Code và UI để tìm ra sự sai lệch về trải nghiệm. |
+| `/ck:plan` | `planner` | Bắt đầu task mới, cần chia phases và atomic commits |
+| `/ck:quantum:plan` | `planner` | Lập kế hoạch sâu với phân tích risk đầy đủ |
+| `/ck:journal` | `project-manager` | Cập nhật Roadmap, Changelog, báo cáo tiến độ |
+| `/brainstorm` | `brainstormer` | So sánh giải pháp kiến trúc, phân tích trade-off |
+| `/ask` | `researcher` | Nghiên cứu thư viện, công nghệ, best practice |
+| `/scout` | `scout` | Quét codebase tìm file và liên kết logic liên quan |
+
+### Thực thi
+| Command | Agent | Dùng khi |
+|:---|:---|:---|
+| `/ck:cook` | `fullstack-dev` | Thực thi mã nguồn từ plan đã confirm |
+| `/ck:quantum:cook` | `fullstack-dev` + `code-reviewer` | Thực thi với giám sát reviewer song song |
+| `/ck:design` | `ui-ux-pro-max` | Xác định Design System (palette, typography, motion) |
+| `/ck:design:good` | `frontend-pro` | Tối ưu assets, polish UI pixel-perfect |
+| `/content:good` | `copywriter` | Viết microcopy, onboarding text, thông báo lỗi |
+| `/use-mcp` | `mcp-manager` | Kết nối công cụ ngoài (DB, API, Search) |
+| `/fix:ci` | `devops` | Docker, CI/CD pipeline, cloud infra |
+
+### Kiểm tra & Sửa lỗi
+| Command | Agent | Dùng khi |
+|:---|:---|:---|
+| `/ck:test` | `tester` | Viết và chạy Unit/Integration/UI Tests |
+| `/review` | `code-reviewer` | Kiểm tra security, logic, code standards |
+| `/fix` | `debugger` | Phân tích logs, tìm Root Cause |
+| `/ck:quantum:fix` | `debugger` | Truy tìm Root Cause qua nhiều tầng logs |
+
+### Tài liệu & Phiên bản
+| Command | Agent | Dùng khi |
+|:---|:---|:---|
+| `/docs:update` | `docs-manager` | Cập nhật README, API Docs, CHANGELOG |
+| `/git:cm` | `git-manager` | Commit, PR, branch — chỉ sau khi tester pass |
+
+### Mapping & Khám phá
+| Command | Agent | Dùng khi |
+|:---|:---|:---|
+| `/ck:quantum:map` | `project-cartographer` | Tạo/cập nhật `PROJECT_MAP.md` cho dự án |
+| `/ck:quantum:ui` | `ui-ux-pro-max` | Audit và nâng cấp UI theo xu hướng thiết kế mới |
 
 ---
 
-## II. TẦNG THỰC THI ĐA LỚP (Execution Layers)
+## Tham chiếu
 
-### 1. 🏗️ Kiến trúc & Hạ tầng (The Backbone)
-- **Agent**: `system-architecture`, `backend-development`, `devops`.
-- **Năng lực**: Xây dựng hệ thống High-availability, tối ưu hóa Database (Postgres/Mongo) và cấu hình CI/CD (Github Actions).
-- **Quy tắc**: Tuân thủ KISS, DRY, và đặc biệt là **YANGI** để giữ hệ thống tinh gọn.
-
-### 2. 🎨 Trải nghiệm & Thẩm mỹ (The Soul)
-- **Agent**: `ui-ux-pro-max`, `frontend-design-pro`, `ui-styling`.
-- **Năng lực**: Thiết kế UI hiện đại (Glassmorphism, Bento Grid). Sử dụng Imagen 4/Veo 3 để tạo tài nguyên media độc bản.
-- **Quy tắc**: **Pixel Perfect**. Luôn review UI bằng Vision AI trước khi bàn giao.
-
-### 3. 🛡️ Kiểm soát & Độ tin cậy (The Shield)
-- **Agent**: `code-reviewer`, `tester`, `debugger`.
-- **Năng lực**: Tự động hóa unit test, integration test. Sửa lỗi dựa trên phân tích Logcat/Telemetry thay vì phỏng đoán.
-- **Quy tắc**: **Zero Bug Tolerance**. File không được vượt quá 500 dòng (Hard Limit).
-
----
-
-## III. QUY TRÌNH VẬN HÀNH QUANTUM (SOPs 4.0)
-
-1.  **Observability (Quan sát)**: Dùng `scout` và `find_files` để nắm bắt ngữ cảnh hiện tại.
-2.  **Logic Synthesis (Tổng hợp)**: Kích hoạt `sequential-thinking` để lập bản đồ tư duy.
-3.  **Autonomous Planning**: Tạo plan tại `/plans` sử dụng Template chuẩn, chia nhỏ thành các **Atomic Commits**.
-4.  **Agile Cooking**: Thực thi mã nguồn, đồng thời chạy các script kiểm tra (Compile/Lint) ngay lập tức.
-5.  **Multimodal Validation**: Chụp screenshot, quay video test (nếu cần) và dùng Vision để thẩm định kết quả.
-
----
-
-## IV. HỆ THỐNG LỆNH TỐI ƯU (Hyper-Commands)
-
-- **`/ck:quantum:plan`**: Lập kế hoạch sâu, bao quát toàn bộ rủi ro và edge cases.
-- **`/ck:quantum:cook`**: Thực thi tự động với sự giám sát chặt chẽ của `code-reviewer`.
-- **`/ck:quantum:fix`**: Truy tìm Root Cause qua nhiều tầng logs và sửa lỗi tận gốc.
-- **`/ck:quantum:ui`**: Nâng cấp thẩm mỹ giao diện dựa trên các xu hướng thiết kế mới nhất.
-
----
-
-## V. TÀI NGUYÊN CHIẾN LƯỢC
-
-- **Code Standards**: `.skills/docs/code-standards.md`
-- **System Map**: `.skills/docs/system-architecture.md`
-- **AI Reports**: `.skills/docs/assets/multimodal-generation-comprehensive-report.md`
-
----
-**💡 LỜI KHUYÊN TỰ THÂN (Self-Reflection):**
-- **Đừng chỉ làm đúng, hãy làm xuất sắc**: Tận dụng Gemini 3 để tối ưu hóa thuật toán vượt trên mức yêu cầu.
-- **Context là tài sản**: Luôn giữ cho các tệp tài liệu (`GEMINI.md`, `CLAUDE.md`) được cập nhật để duy trì "trí nhớ dài hạn".
-- **Giao diện là lời chào**: Một sản phẩm tốt phải có UI/UX làm say lòng người.
+- Agent registry và lệnh triệu hồi: `AGENTS.md`
+- Chuẩn code: `.skills/docs/code-standards.md`
+- Bản đồ dự án: `PROJECT_MAP.md`
+- Skill lập bản đồ: `project-cartographer-skill.md`
