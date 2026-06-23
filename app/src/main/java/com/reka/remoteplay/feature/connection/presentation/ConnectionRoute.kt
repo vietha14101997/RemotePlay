@@ -49,6 +49,22 @@ fun ConnectionRoute(
     val guestError by viewModel.guestError.collectAsState()
     val guestConnecting by viewModel.guestConnecting.collectAsState()
 
+    val webRtcConnectionType by viewModel.webRtcConnectionType.collectAsState()
+    val webRtcIceHostCount by viewModel.webRtcIceHostCount.collectAsState()
+    val webRtcIceSrflxCount by viewModel.webRtcIceSrflxCount.collectAsState()
+    val webRtcIceRelayCount by viewModel.webRtcIceRelayCount.collectAsState()
+    val webRtcIcePrflxCount by viewModel.webRtcIcePrflxCount.collectAsState()
+    val webRtcIceGatherDurationMs by viewModel.webRtcIceGatherDurationMs.collectAsState()
+
+    val diagnostics = ConnectionDiagnostics(
+        connectionType = webRtcConnectionType,
+        hostCount = webRtcIceHostCount,
+        srflxCount = webRtcIceSrflxCount,
+        relayCount = webRtcIceRelayCount,
+        prflxCount = webRtcIcePrflxCount,
+        gatherDurationMs = webRtcIceGatherDurationMs
+    )
+
     ConnectionScreen(
         connectionState = connectionState,
         savedServers = savedServers,
@@ -96,22 +112,6 @@ fun ConfigReviewRoute(
     var isPaused by rememberSaveable { mutableStateOf(false) }
     val connectionType = remember { viewModel.getConnectionType() }
     val webRtcConnectionType by viewModel.webRtcConnectionType.collectAsState()
-    val iceHost by viewModel.webRtcIceHostCount.collectAsState()
-    val iceSrflx by viewModel.webRtcIceSrflxCount.collectAsState()
-    val iceRelay by viewModel.webRtcIceRelayCount.collectAsState()
-    val icePrflx by viewModel.webRtcIcePrflxCount.collectAsState()
-    val iceGatherMs by viewModel.webRtcIceGatherDurationMs.collectAsState()
-    val diagnostics = remember(iceHost, iceSrflx, iceRelay, icePrflx, iceGatherMs, webRtcConnectionType) {
-        if (webRtcConnectionType == "unknown" || webRtcConnectionType == "checking") null
-        else ConnectionDiagnostics(
-            connectionType = webRtcConnectionType,
-            hostCount = iceHost,
-            srflxCount = iceSrflx,
-            relayCount = iceRelay,
-            prflxCount = icePrflx,
-            gatherDurationMs = iceGatherMs
-        )
-    }
 
     var navigated by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(connectionState) {

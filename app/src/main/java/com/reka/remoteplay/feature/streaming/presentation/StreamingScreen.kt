@@ -39,6 +39,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -593,7 +594,7 @@ private fun TouchpadLayer(
                         accumY += avgDy; accumX += avgDx
                         val scrollY = (accumY / scrollThreshold).toInt(); val scrollX = (accumX / scrollThreshold).toInt()
                         if (scrollY != 0) { onSendMouseWheel((scrollY * 40).toShort(), 0); accumY -= scrollY * scrollThreshold }
-                        if (scrollX != 0) { onSendMouseWheel(0, (scrollX * 40).toShort()); accumX -= scrollX * scrollThreshold }
+                        if (scrollX != 0) { onSendMouseWheel(0, (-(scrollX * 40)).toShort()); accumX -= scrollX * scrollThreshold }
                     }
                     if (totalMoved < slop * 2) { onSendMouseButton(1.toByte(), true); onSendMouseButton(1.toByte(), false) }
                 }
@@ -712,4 +713,23 @@ private fun charToVirtualKey(ch: Char): Int = when (ch) {
     '.' -> 0xBE
     '/' -> 0xBF
     else -> 0
+}
+
+@Preview(name = "Streaming Screen Overlay", device = "spec:width=1280dp,height=800dp,orientation=landscape", showBackground = true)
+@Composable
+private fun StreamingScreenPreview() {
+    RemotePlayTheme {
+        StreamingScreen(
+            state = StreamingUiState(
+                monitors = listOf(MonitorInfoDto(0, "Main", 1920, 1080)),
+                showUI = true,
+                rttMs = 15f,
+                streamFps = 60,
+                qualityPreset = com.reka.remoteplay.core.util.QualityPreset.Quality
+            ),
+            actions = StreamingUiActions(),
+            onSurfaceCreated = {},
+            onSurfaceDestroyed = {}
+        )
+    }
 }

@@ -23,10 +23,10 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import com.reka.remoteplay.R
 import com.reka.remoteplay.ui.theme.*
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.reka.remoteplay.core.model.HardwareInfoMessage
-import com.reka.remoteplay.core.model.SuggestedConfigMessage
+import com.reka.remoteplay.core.model.*
 import com.reka.remoteplay.core.util.ScreenSpecs
 import com.reka.remoteplay.core.util.EncoderResolutionCalculator
 import com.reka.remoteplay.core.util.QualityPreset
@@ -109,14 +109,33 @@ fun ConfigReviewScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .statusBarsPadding()
                 .verticalScroll(rememberScrollState())
-                .padding(20.dp)
+                .padding(horizontal = 20.dp)
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back), tint = AppTextTertiary)
+            Box(
+                modifier = Modifier.fillMaxWidth(),
+                contentAlignment = Alignment.Center
+            ) {
+                IconButton(
+                    onClick = onBack,
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .offset(x = (-12).dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = stringResource(R.string.back),
+                        tint = Color.White
+                    )
                 }
-                Text(stringResource(R.string.stream_configuration), fontSize = 20.sp, fontWeight = FontWeight.Bold, color = AppTextPrimary)
+                Text(
+                    text = stringResource(R.string.stream_configuration),
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = AppTextPrimary,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
             }
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -473,5 +492,35 @@ private fun InfoCard(
                 }
             }
         }
+    }
+}
+
+@Preview(name = "Config Review", showBackground = true)
+@Composable
+private fun ConfigReviewScreenPreview() {
+    RemotePlayTheme {
+        ConfigReviewScreen(
+            serverInfo = HardwareInfoMessage(
+                device = DeviceInfo(
+                    name = "Gaming-PC",
+                    gpu = "NVIDIA RTX 4080",
+                    gpuVramGB = 16,
+                    processor = "Intel i9-13900K"
+                ),
+                encoder = EncoderInfo(type = "NVENC", hwAccel = true),
+                monitors = listOf(MonitorInfoDto(0, "Display 1", 1920, 1080)),
+                maxQualityHeight = 2160
+            ),
+            suggestedConfig = SuggestedConfigMessage(
+                resolution = ResolutionDto(1920, 1080),
+                refreshRate = 60,
+                bitrateKbps = 20000,
+                selectedCodec = "H264",
+                networkInfo = NetworkInfoDto(pingMs = 15.0, bandwidthMbps = 100.0, jitterMs = 2.0)
+            ),
+            connectionType = "Wi-Fi",
+            onProceed = { _, _, _ -> },
+            onBack = {}
+        )
     }
 }

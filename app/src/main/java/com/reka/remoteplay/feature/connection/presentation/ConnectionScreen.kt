@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.tooling.preview.Preview
 import com.reka.remoteplay.R
 import com.reka.remoteplay.core.network.relay.RelayDevice
 import com.reka.remoteplay.feature.connection.data.local.SavedServer
@@ -33,7 +34,7 @@ import java.text.SimpleDateFormat
 import java.util.*
 
 @Composable
-    fun ConnectionScreen(
+fun ConnectionScreen(
     connectionState: ConnectionState,
     savedServers: List<SavedServer>,
     discoveredServers: List<ServerDiscoveryService.DiscoveredServer>,
@@ -566,5 +567,70 @@ private fun RelayDeviceItem(
                 )
             }
         }
+    }
+}
+
+@Preview(name = "Main Screen - Idle", showBackground = true)
+@Composable
+private fun ConnectionScreenIdlePreview() {
+    RemotePlayTheme {
+        ConnectionScreen(
+            connectionState = ConnectionState.Disconnected,
+            savedServers = listOf(
+                SavedServer(name = "Gaming PC", host = "192.168.1.10", port = 8288, lastConnected = System.currentTimeMillis()),
+                SavedServer(name = "Work Laptop", host = "192.168.1.11", port = 8288)
+            ),
+            discoveredServers = emptyList(),
+            isScanning = false,
+            onStartScan = {},
+            onStopScan = {},
+            onDisconnect = {},
+            onConnectToServer = {},
+            onConnectToDiscovered = {},
+            onRemoveServer = {},
+            onLogout = {}
+        )
+    }
+}
+
+@Preview(name = "Main Screen - Scanning", showBackground = true)
+@Composable
+private fun ConnectionScreenScanningPreview() {
+    RemotePlayTheme {
+        ConnectionScreen(
+            connectionState = ConnectionState.Disconnected,
+            savedServers = emptyList(),
+            discoveredServers = listOf(
+                ServerDiscoveryService.DiscoveredServer(name = "Desktop-ABC", ip = "192.168.1.100", port = 8288)
+            ),
+            isScanning = true,
+            onStartScan = {},
+            onStopScan = {},
+            onDisconnect = {},
+            onConnectToServer = {},
+            onConnectToDiscovered = {},
+            onRemoveServer = {},
+            onLogout = {}
+        )
+    }
+}
+
+@Preview(name = "Main Screen - Connecting", showBackground = true)
+@Composable
+private fun ConnectionScreenConnectingPreview() {
+    RemotePlayTheme {
+        ConnectionScreen(
+            connectionState = ConnectionState.Connecting,
+            savedServers = emptyList(),
+            discoveredServers = emptyList(),
+            isScanning = false,
+            onStartScan = {},
+            onStopScan = {},
+            onDisconnect = {},
+            onConnectToServer = {},
+            onConnectToDiscovered = {},
+            onRemoveServer = {},
+            onLogout = {}
+        )
     }
 }
