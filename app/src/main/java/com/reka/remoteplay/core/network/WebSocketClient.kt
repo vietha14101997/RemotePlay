@@ -18,10 +18,30 @@ class WebSocketClient @Inject constructor() {
         .pingInterval(0, TimeUnit.SECONDS) // We handle ping/pong ourselves
         .build()
 
-    private var webSocket: WebSocket? = null
-    private var pingJob: Job? = null
+    // @Volatile (A2): read/written across OkHttp callback threads, the IO reconnect
+    // coroutine, and caller threads; the stale-callback identity guards
+    // (webSocket !== this@WebSocketClient.webSocket) rely on cross-thread visibility.
+    @Volatile private var webSocket: WebSocket? = null
+    @Volatile private var pingJob: Job? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val lastPongTime = AtomicLong(0)
+
+    // --- Reconnect state (P2 signaling resilience) ---
+    /** URL used for the most recent [connectWithUrl] call; resent verbatim on every reconnect
+     *  attempt so the same `session`/auth query params reach the relay. */
+    private var lastConnectUrl: String? = null
+    /** True once [disconnect] has been called; suppresses auto-reconnect until the next
+     *  explicit connect*() call. Guards the reconnect scheduling decision, see [scheduleReconnect]. */
+    private var userInitiatedClose = false
+    /** The currently scheduled (delay + retry) reconnect coroutine, if any. Guarded by
+     *  [reconnectLock] so overlapping onClosed/onFailure/ping-timeout callbacks single-flight. */
+    private var reconnectJob: Job? = null
+    private val reconnectLock = Any()
+    private val reconnectPolicy = WebSocketReconnectPolicy()
+
+    private val _reconnectAttempt = MutableStateFlow(0)
+    /** 1-based reconnect attempt number while [connectionState] is RECONNECTING; 0 otherwise. */
+    val reconnectAttempt: StateFlow<Int> = _reconnectAttempt.asStateFlow()
 
     private val _textMessages = MutableSharedFlow<String>(
         replay = 0,
@@ -113,19 +133,49 @@ class WebSocketClient @Inject constructor() {
         connectWithUrl(url)
     }
 
-    private fun connectWithUrl(url: String) {
+    /**
+     * @param isReconnect true when this call originates from [scheduleReconnect] retrying the
+     *   same [lastConnectUrl] after a drop, rather than a fresh explicit connect*() call.
+     */
+    private fun connectWithUrl(url: String, isReconnect: Boolean = false) {
+        // A1: a disconnect() that lands AFTER the reconnect delay but before/while this
+        // runs must abort the retry. connectWithUrl has no suspension points, so coroutine
+        // cancellation can't interrupt it once started — re-check userInitiatedClose under
+        // the lock, otherwise a zombie socket comes up "connected" after the user left.
+        if (isReconnect) {
+            synchronized(reconnectLock) { if (userInitiatedClose) return }
+        }
+
         pingJob?.cancel()
         pingJob = null
         webSocket?.close(1000, null)
         webSocket = null
 
-        Log.d(TAG, "Connecting to $url")
-        _connectionState.value = WsConnectionState.CONNECTING
+        if (!isReconnect) {
+            synchronized(reconnectLock) {
+                lastConnectUrl = url
+                userInitiatedClose = false
+                reconnectJob?.cancel()
+                reconnectJob = null
+            }
+            reconnectPolicy.reset()
+            _reconnectAttempt.value = 0
+        }
+
+        Log.d(TAG, "Connecting to $url${if (isReconnect) " (reconnect attempt ${_reconnectAttempt.value})" else ""}")
+        _connectionState.value = if (isReconnect) WsConnectionState.RECONNECTING else WsConnectionState.CONNECTING
 
         val request = Request.Builder().url(url).build()
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (webSocket !== this@WebSocketClient.webSocket) return
                 Log.d(TAG, "WebSocket connected")
+                synchronized(reconnectLock) {
+                    reconnectJob?.cancel()
+                    reconnectJob = null
+                }
+                reconnectPolicy.reset()
+                _reconnectAttempt.value = 0
                 _connectionState.value = WsConnectionState.CONNECTED
                 startPingLoop()
             }
@@ -160,13 +210,23 @@ class WebSocketClient @Inject constructor() {
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                if (webSocket !== this@WebSocketClient.webSocket) return
                 Log.d(TAG, "WebSocket closed: $code $reason")
-                _connectionState.value = WsConnectionState.DISCONNECTED
+                if (userInitiatedClose) {
+                    _connectionState.value = WsConnectionState.DISCONNECTED
+                } else {
+                    scheduleReconnect()
+                }
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                if (webSocket !== this@WebSocketClient.webSocket) return
                 Log.e(TAG, "WebSocket failure: ${t.message}", t)
-                _connectionState.value = WsConnectionState.FAILED
+                if (userInitiatedClose) {
+                    _connectionState.value = WsConnectionState.DISCONNECTED
+                } else {
+                    scheduleReconnect()
+                }
             }
         })
     }
@@ -175,12 +235,52 @@ class WebSocketClient @Inject constructor() {
         return webSocket?.send(text) ?: false
     }
 
+    /**
+     * User-initiated disconnect. Cancels any pending/in-flight reconnect attempt and never
+     * re-triggers one — the resulting `onClosed` callback (code 1000) is recognized as
+     * user-initiated via [userInitiatedClose] and will not schedule a reconnect.
+     */
     fun disconnect() {
+        synchronized(reconnectLock) {
+            userInitiatedClose = true
+            reconnectJob?.cancel()
+            reconnectJob = null
+        }
+        reconnectPolicy.reset()
+        _reconnectAttempt.value = 0
         pingJob?.cancel()
         pingJob = null
         webSocket?.close(1000, "Client disconnect")
         webSocket = null
         _connectionState.value = WsConnectionState.DISCONNECTED
+    }
+
+    /**
+     * Schedules the next reconnect attempt with exponential backoff + jitter (see
+     * [WebSocketReconnectPolicy]), unless the drop was user-initiated or a reconnect is already
+     * pending (single-flight guard). Resends [lastConnectUrl] verbatim so the relay sees the
+     * same `session`/auth params on the new connection.
+     */
+    private fun scheduleReconnect() {
+        val url: String
+        val delayMs: Long
+        synchronized(reconnectLock) {
+            if (userInitiatedClose) return
+            if (reconnectJob?.isActive == true) return // already have one in flight
+            url = lastConnectUrl ?: run {
+                // Never had anything to connect to — nothing to retry.
+                _connectionState.value = WsConnectionState.FAILED
+                return
+            }
+            delayMs = reconnectPolicy.nextDelayMs()
+            _reconnectAttempt.value = reconnectPolicy.attempt
+            _connectionState.value = WsConnectionState.RECONNECTING
+            Log.d(TAG, "Reconnect attempt ${reconnectPolicy.attempt} scheduled in ${delayMs}ms")
+            reconnectJob = scope.launch {
+                delay(delayMs)
+                connectWithUrl(url, isReconnect = true)
+            }
+        }
     }
 
     private fun startPingLoop() {
@@ -194,13 +294,14 @@ class WebSocketClient @Inject constructor() {
                 webSocket?.send("ping:$ts")
 
                 // C2: detect silent server death (no FIN/RST sent).
-                // If we haven't received a pong for 3 consecutive intervals, mark FAILED.
+                // If we haven't received a pong for 3 consecutive intervals, treat it as a
+                // transport drop and reconnect rather than declaring a hard failure.
                 val elapsed = System.currentTimeMillis() - lastPongTime.get()
                 if (elapsed > PING_TIMEOUT_MS) {
-                    Log.w(TAG, "Ping timeout (${elapsed}ms since last pong) — marking FAILED")
-                    _connectionState.value = WsConnectionState.FAILED
+                    Log.w(TAG, "Ping timeout (${elapsed}ms since last pong) — reconnecting")
                     webSocket?.cancel()
                     webSocket = null
+                    scheduleReconnect()
                     break
                 }
             }
@@ -231,5 +332,9 @@ enum class WsConnectionState {
     DISCONNECTED,
     CONNECTING,
     CONNECTED,
+    /** Auto-reconnecting after a non-user-initiated drop; see [WebSocketClient.reconnectAttempt]. */
+    RECONNECTING,
+    /** Never reached by the automatic backoff loop itself (it retries indefinitely on any drop
+     *  once a connection has been attempted) — reserved as a defensive terminal state. */
     FAILED
 }

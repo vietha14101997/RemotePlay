@@ -1,5 +1,6 @@
 package com.reka.remoteplay.feature.streaming.data.remote
 
+import com.reka.remoteplay.core.network.MdnsResolver
 import com.reka.remoteplay.core.network.WebSocketClient
 import com.reka.remoteplay.feature.connection.domain.model.ConnectionState
 import com.reka.remoteplay.feature.connection.domain.repository.ConnectionStateRepository
@@ -50,18 +51,20 @@ class PhaseTwoHandlerTest {
     private val connectionStateRepo = PhaseTwoFakeConnectionStateRepository()
     private val webRtcManager: WebRtcManager = mockk(relaxed = true)
     private val cursorRenderer: CursorRenderer = mockk(relaxed = true)
+    private val mdnsResolver: MdnsResolver = mockk(relaxed = true)
 
     private val textMessages = MutableSharedFlow<String>(replay = 1)
 
     @Before
     fun setUp() {
         every { webSocketClient.textMessages } returns textMessages
-        
+
         handler = PhaseTwoHandler(
             webSocketClient,
             connectionStateRepo,
             webRtcManager,
-            cursorRenderer
+            cursorRenderer,
+            mdnsResolver
         )
     }
 

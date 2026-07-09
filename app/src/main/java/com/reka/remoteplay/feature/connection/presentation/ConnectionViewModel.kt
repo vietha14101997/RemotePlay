@@ -191,7 +191,20 @@ class ConnectionViewModel @Inject constructor(
                     WsConnectionState.CONNECTING -> {
                         connectionStateRepo.tryTransition(ConnectionState.Connecting)
                     }
+                    WsConnectionState.RECONNECTING -> {
+                        // Transient WS drop (network blip, relay/host restart) — surface as
+                        // "Reconnecting…" instead of a hard failure. WebSocketClient retries
+                        // with backoff on its own; this just reflects that in the UI.
+                        val attempt = webSocketClient.reconnectAttempt.value
+                        connectionStateRepo.tryTransition(ConnectionState.Reconnecting(attempt))
+                    }
                     WsConnectionState.CONNECTED -> {
+                        // Resuming after RECONNECTING: Reconnecting -> AwaitingHardwareInfo is not
+                        // a modeled direct transition, so route through Connecting first (the
+                        // state machine explicitly allows Reconnecting -> Connecting).
+                        if (connectionStateRepo.currentState is ConnectionState.Reconnecting) {
+                            connectionStateRepo.tryTransition(ConnectionState.Connecting)
+                        }
                         connectionStateRepo.tryTransition(ConnectionState.AwaitingHardwareInfo)
                     }
                     WsConnectionState.DISCONNECTED -> {
