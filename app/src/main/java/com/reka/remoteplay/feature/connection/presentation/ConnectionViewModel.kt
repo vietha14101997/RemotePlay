@@ -3,6 +3,7 @@ package com.reka.remoteplay.feature.connection.presentation
 import android.app.Application
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -27,6 +28,7 @@ import com.reka.remoteplay.feature.connection.domain.model.ConnectionState
 import com.reka.remoteplay.feature.connection.data.GuestConnectionRepository
 import com.reka.remoteplay.feature.connection.domain.repository.ConnectionStateRepository
 import com.reka.remoteplay.feature.streaming.data.remote.AudioPlayer
+import com.reka.remoteplay.feature.streaming.data.remote.IceRestartTrigger
 import com.reka.remoteplay.feature.streaming.data.remote.PhaseTwoHandler
 import com.reka.remoteplay.feature.streaming.data.remote.VideoDecoderManager
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -223,6 +225,13 @@ class ConnectionViewModel @Inject constructor(
                 }
             }
         }
+
+        // P5 F10 (first trigger): detect WiFi<->Cellular handover / loss for the active
+        // network while a session is live, and forward it to WebRtcManager's ICE-restart
+        // gating + adaptive debounce. Registered for the ViewModel's whole lifetime (it stays
+        // alive across the Streaming screen too — see AppNavigation, Streaming is pushed
+        // without popping Connection) and unregistered in onCleared().
+        registerIceRestartNetworkCallback()
     }
 
     // Start relay discovery when logged in
@@ -444,8 +453,74 @@ class ConnectionViewModel @Inject constructor(
         authRepository.logout()
     }
 
+    // ==================== P5: ICE Restart on Network Change (first trigger) ====================
+
+    private var connectivityManager: ConnectivityManager? = null
+    private var iceRestartNetworkCallback: ConnectivityManager.NetworkCallback? = null
+
+    // Last transport we observed for the active network (TRANSPORT_WIFI/TRANSPORT_CELLULAR/...);
+    // null until the first callback fires. Used to tell a genuine WiFi<->Cellular handover apart
+    // from a same-transport capability update (signal strength, bandwidth, ...) so we don't
+    // spam WebRtcManager on every minor change — this doubles as the "cancel if the same
+    // transport is restored quickly" behavior: no real transition means nothing is forwarded,
+    // and WebRtcManager's own debounce + isHealthyNow recheck cover a genuine but brief drop.
+    private var lastNetworkTransport: Int? = null
+
+    private fun registerIceRestartNetworkCallback() {
+        val cm = getApplication<Application>()
+            .getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+        connectivityManager = cm
+
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                onTransportObserved(cm.getNetworkCapabilities(network))
+            }
+
+            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+                onTransportObserved(capabilities)
+            }
+
+            override fun onLost(network: Network) {
+                if (isSessionLive()) {
+                    webRtcManager.triggerIceRestart(IceRestartTrigger.NETWORK_HARD_LOST)
+                }
+            }
+        }
+        iceRestartNetworkCallback = callback
+        try {
+            cm.registerDefaultNetworkCallback(callback)
+        } catch (_: Exception) {
+            // Some OEM/emulator ConnectivityManager implementations can throw here — network
+            // change detection is best-effort; the second trigger (iceConnectionState monitor
+            // in WebRtcManager) still covers recovery even if this registration fails.
+            iceRestartNetworkCallback = null
+        }
+    }
+
+    private fun onTransportObserved(capabilities: NetworkCapabilities?) {
+        val transport = primaryTransportOf(capabilities) ?: return
+        val changed = lastNetworkTransport != null && transport != lastNetworkTransport
+        lastNetworkTransport = transport
+        if (changed && isSessionLive()) {
+            webRtcManager.triggerIceRestart(IceRestartTrigger.NETWORK_SOFT_CAPABILITIES_CHANGED)
+        }
+    }
+
+    private fun isSessionLive(): Boolean = connectionStateRepo.currentState is ConnectionState.Streaming
+
+    private fun primaryTransportOf(capabilities: NetworkCapabilities?): Int? = when {
+        capabilities == null -> null
+        capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> NetworkCapabilities.TRANSPORT_WIFI
+        capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> NetworkCapabilities.TRANSPORT_CELLULAR
+        capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> NetworkCapabilities.TRANSPORT_ETHERNET
+        else -> null
+    }
+
     override fun onCleared() {
         super.onCleared()
         serverDiscoveryService.stop()
+        iceRestartNetworkCallback?.let { callback ->
+            runCatching { connectivityManager?.unregisterNetworkCallback(callback) }
+        }
     }
 }

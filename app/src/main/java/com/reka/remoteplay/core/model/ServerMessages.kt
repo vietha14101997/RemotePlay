@@ -11,7 +11,11 @@ data class HardwareInfoMessage(
     @param:Json(name = "device") val device: DeviceInfo = DeviceInfo(),
     @param:Json(name = "encoder") val encoder: EncoderInfo = EncoderInfo(),
     @param:Json(name = "monitors") val monitors: List<MonitorInfoDto> = emptyList(),
-    @param:Json(name = "maxQualityHeight") val maxQualityHeight: Int = 1440
+    @param:Json(name = "maxQualityHeight") val maxQualityHeight: Int = 1440,
+    // P5 F8: host's active transport supports a live ICE restart (vs full restart_phase2
+    // teardown). Defaults to false so an older host that omits this field is treated as
+    // unsupported — client always falls back to restart_phase2 in that case.
+    @param:Json(name = "supportsIceRestart") val supportsIceRestart: Boolean = false
 )
 
 @JsonClass(generateAdapter = true)
@@ -101,6 +105,24 @@ data class ReconnectRequestMessage(
     @param:Json(name = "type") val type: String = "reconnect_request",
     @param:Json(name = "reason") val reason: String = "",
     @param:Json(name = "suggestedCodec") val suggestedCodec: String? = null
+)
+
+// ==================== Phase 5: ICE Restart on Network Change (Server -> Client) ====================
+
+/** Host's answer to our `ice_restart_offer`, applied on the SAME live main PeerConnection —
+ *  no teardown, just a fresh ICE ufrag/pwd + new candidate-pair selection. */
+@JsonClass(generateAdapter = true)
+data class IceRestartAnswerMessage(
+    @param:Json(name = "type") val type: String = "ice_restart_answer",
+    @param:Json(name = "sdp") val sdp: String = ""
+)
+
+/** Host-initiated third trigger: asks the client to initiate an ICE restart (host saw a path
+ *  change it can't detect from the client side). Android stays the offerer — this only tells
+ *  it WHEN to act, it never flips who sends the offer (glare avoidance). */
+@JsonClass(generateAdapter = true)
+data class RequestIceRestartMessage(
+    @param:Json(name = "type") val type: String = "request_ice_restart"
 )
 
 // ==================== Phase 3: Server -> Client ====================

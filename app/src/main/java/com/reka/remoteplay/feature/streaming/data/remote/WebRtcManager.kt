@@ -29,6 +29,11 @@ class WebRtcManager @Inject constructor(
     private val telemetryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     // L2: report telemetry once per session — ICE→CONNECTED can fire repeatedly on flaps.
     @Volatile private var telemetryReported = false
+
+    // P5: dedicated long-lived scope for ICE-restart scheduling (debounce/backoff/watchdog) and
+    // the best-effort TURN-credential refresh before a restart. Kept separate from
+    // [telemetryScope] so its single documented purpose (telemetry) stays unambiguous.
+    private val restartScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     // STUN only by default — enables P2P across different networks without TURN bandwidth cost.
     // Multiple STUN providers for ISP-blocking redundancy: Google + Cloudflare + Nextcloud.
     // TURN servers can be added via setIceServers() when needed (4G fallback).
@@ -96,6 +101,44 @@ class WebRtcManager @Inject constructor(
     var onMainIceCandidate: ((IceCandidate) -> Unit)? = null
     var onVideoIceCandidate: ((Int, IceCandidate) -> Unit)? = null
 
+    // ==================== P5: ICE Restart on Network Change ====================
+
+    // F8: host capability, read from the Phase-1 hardware_info handshake by PhaseOneHandler.
+    // false (default/unknown) => every trigger falls straight to restart_phase2.
+    private val _supportsIceRestart = MutableStateFlow(false)
+    val supportsIceRestart: StateFlow<Boolean> = _supportsIceRestart
+
+    /** Emits the SDP of a freshly-created `iceRestart` offer — wired by PhaseTwoHandler to send
+     *  `ice_restart_offer` over the signaling WebSocket. */
+    var onIceRestartOffer: ((String) -> Unit)? = null
+
+    /** Fired when ICE restart isn't usable (capability false) or its retry budget is exhausted —
+     *  wired by PhaseTwoHandler to send `restart_phase2` instead. */
+    var onRequestPhase2Restart: (() -> Unit)? = null
+
+    private val iceRestartPolicy = IceRestartPolicy()
+    private val restartCoordinator = IceRestartCoordinator(
+        scope = restartScope,
+        policy = iceRestartPolicy,
+        isHealthyNow = {
+            _iceConnectionState.value == PeerConnection.IceConnectionState.CONNECTED ||
+                _iceConnectionState.value == PeerConnection.IceConnectionState.COMPLETED
+        },
+        performRestart = { trigger -> performIceRestartAttempt(trigger) },
+        fallbackToPhase2 = { onRequestPhase2Restart?.invoke() }
+    )
+
+    // F14 recovery-clock: t0 = trigger fire time, t1 = ICE back to CONNECTED. 0L = no incident
+    // currently tracked (guards against overwriting t0 on retries within the same incident).
+    @Volatile private var restartT0Ms = 0L
+
+    // M-O (best-effort): TTL bookkeeping for the ICE servers currently applied, so a restart can
+    // refresh TURN credentials first if they're close to expiring. ttlSec<=0 means "unknown" and
+    // disables the refresh (e.g. ConnectionViewModel's current callers don't thread a TTL
+    // through yet — see setIceServers below).
+    private var iceServersFetchedAtMs = 0L
+    private var iceServersTtlSec = 0
+
     companion object {
         private const val TAG = "WebRtcManager"
 
@@ -105,6 +148,10 @@ class WebRtcManager @Inject constructor(
             address.contains(':') -> "ipv6"
             else -> "ipv4"
         }
+
+        // M-O: refresh ICE servers before a restart once 80% of their TTL has elapsed.
+        private const val ICE_SERVERS_REFRESH_THRESHOLD = 0.8
+        private const val ICE_SERVERS_REFRESH_TIMEOUT_MS = 3_000L
     }
 
     fun initialize() {
@@ -125,15 +172,22 @@ class WebRtcManager @Inject constructor(
     /**
      * Update ICE servers from relay API response for TURN/STUN support.
      * Must be called before creating any PeerConnection.
+     *
+     * @param ttlSec TURN credential lifetime in seconds, if known (from the relay's
+     *   ice-servers response `ttl` field). 0/unknown disables the M-O best-effort pre-restart
+     *   refresh below — current call sites (ConnectionViewModel via
+     *   GuestConnectionRepository.fetchIceServers()) don't thread the TTL through yet.
      */
-    fun setIceServers(servers: List<IceServerConfig>) {
+    fun setIceServers(servers: List<IceServerConfig>, ttlSec: Int = 0) {
         iceServers = servers.map { config ->
             val builder = PeerConnection.IceServer.builder(config.urls)
             if (config.username != null) builder.setUsername(config.username)
             if (config.credential != null) builder.setPassword(config.credential)
             builder.createIceServer()
         }
-        Log.d(TAG, "ICE servers updated: ${iceServers.size} server(s)")
+        iceServersFetchedAtMs = System.currentTimeMillis()
+        iceServersTtlSec = ttlSec
+        Log.d(TAG, "ICE servers updated: ${iceServers.size} server(s), ttl=${ttlSec}s")
     }
 
     private fun buildRtcConfig(): PeerConnection.RTCConfiguration {
@@ -160,6 +214,11 @@ class WebRtcManager @Inject constructor(
         val f = factory ?: return
         val config = buildRtcConfig()
         resetGatherCounters()
+        // P5: if this is a restart_phase2 re-offer (not the very first connect), the previous
+        // mainPc/videoPcs/DCs are still alive and about to be orphaned — dispose them first so
+        // we don't leak PeerConnections or leave a dead PC's observer emitting stale candidates.
+        // No-op on the first call (everything is already null/empty).
+        disposePeerConnectionsOnly()
 
         mainPc = f.createPeerConnection(config, object : PeerConnectionObserverAdapter() {
             override fun onIceCandidate(candidate: IceCandidate) {
@@ -174,7 +233,14 @@ class WebRtcManager @Inject constructor(
                 if (state == PeerConnection.IceConnectionState.CONNECTED) {
                     detectConnectionType()
                 }
+                handleIceConnectionStateForRestart(state)
             }
+
+            // P5 F10: intentional no-op. onRenegotiationNeeded fires for SPONTANEOUS
+            // renegotiation triggers (e.g. adding a track) which this app never does after the
+            // initial offer — all renegotiation here (ICE restart, restart_phase2) is driven
+            // explicitly by triggerIceRestart()/createMainPcOffer(), never by this callback.
+            override fun onRenegotiationNeeded() {}
 
             override fun onDataChannel(dc: DataChannel) {
                 val label = dc.label()
@@ -251,6 +317,126 @@ class WebRtcManager @Inject constructor(
 
     fun addMainIceCandidate(sdpMid: String?, sdpMLineIndex: Int, candidate: String) {
         mainPc?.addIceCandidate(IceCandidate(sdpMid ?: "", sdpMLineIndex, candidate))
+    }
+
+    // ==================== P5: ICE Restart on Network Change ====================
+
+    /** F8: called by PhaseOneHandler once it parses `hardware_info.supportsIceRestart`. */
+    fun setSupportsIceRestart(supported: Boolean) {
+        _supportsIceRestart.value = supported
+        Log.d(TAG, "Host supports_ice_restart=$supported")
+    }
+
+    /**
+     * Central entry point for ALL ICE-restart triggers: Android's ConnectivityManager
+     * (network change/loss), this manager's own iceConnectionState monitor (second trigger,
+     * F10), or a host `request_ice_restart` (optional third trigger). Gates on F8 capability +
+     * a live session; when either check fails, falls back to `restart_phase2` via
+     * [onRequestPhase2Restart] instead of ever sending an offer the host can't apply.
+     */
+    fun triggerIceRestart(trigger: IceRestartTrigger) {
+        when (IceRestartGate.decide(hasLiveSession = mainPc != null, hostSupportsIceRestart = _supportsIceRestart.value)) {
+            IceRestartDecision.IGNORE_NO_SESSION -> {
+                Log.d(TAG, "triggerIceRestart($trigger): no live session, ignoring")
+            }
+            IceRestartDecision.FALLBACK_RESTART_PHASE2 -> {
+                Log.i(TAG, "triggerIceRestart($trigger): host lacks supports_ice_restart, falling back to restart_phase2")
+                onRequestPhase2Restart?.invoke()
+            }
+            IceRestartDecision.ATTEMPT_ICE_RESTART -> {
+                if (restartT0Ms == 0L) restartT0Ms = System.currentTimeMillis() // F14 t0
+                restartCoordinator.onTrigger(trigger)
+            }
+        }
+    }
+
+    /** Host's answer to our `ice_restart_offer`, applied on the SAME live main PeerConnection. */
+    fun handleIceRestartAnswer(answerSdp: String) {
+        val pc = mainPc
+        if (pc == null) {
+            Log.w(TAG, "handleIceRestartAnswer: no live main PC, dropping answer")
+            return
+        }
+        val answer = SessionDescription(SessionDescription.Type.ANSWER, answerSdp)
+        pc.setRemoteDescription(SdpObserverAdapter(), answer)
+        Log.d(TAG, "ICE restart: applied answer, awaiting new candidate-pair selection")
+    }
+
+    /** Routes iceConnectionState transitions into the restart coordinator (F10 second trigger +
+     *  F14 recovery-clock). Called from the main PC's onIceConnectionChange observer. */
+    private fun handleIceConnectionStateForRestart(state: PeerConnection.IceConnectionState) {
+        when (state) {
+            PeerConnection.IceConnectionState.CONNECTED,
+            PeerConnection.IceConnectionState.COMPLETED -> {
+                if (restartT0Ms != 0L) {
+                    Log.i(TAG, "ICE restart recovered: t0->t1 = ${System.currentTimeMillis() - restartT0Ms}ms")
+                    restartT0Ms = 0L
+                }
+                restartCoordinator.onIceHealthy()
+            }
+            PeerConnection.IceConnectionState.DISCONNECTED -> triggerIceRestart(IceRestartTrigger.ICE_DISCONNECTED)
+            PeerConnection.IceConnectionState.FAILED -> triggerIceRestart(IceRestartTrigger.ICE_FAILED)
+            else -> {}
+        }
+    }
+
+    /** [IceRestartCoordinator]'s performRestart callback: the actual restartIce() + createOffer()
+     *  round trip on the live main PC. Never tears down the PC/encoder — only ICE re-gathers. */
+    private suspend fun performIceRestartAttempt(trigger: IceRestartTrigger) {
+        val pc = mainPc
+        if (pc == null) {
+            Log.w(TAG, "performIceRestartAttempt($trigger): session ended mid-schedule, aborting")
+            restartT0Ms = 0L
+            restartCoordinator.onIceHealthy() // clears restartInFlight so we don't get stuck
+            return
+        }
+        Log.i(TAG, "Performing ICE restart (trigger=$trigger, retry=${iceRestartPolicy.attempt})")
+        maybeRefreshIceServersBeforeRestart(pc)
+
+        pc.restartIce()
+        pc.createOffer(object : SdpObserverAdapter() {
+            override fun onCreateSuccess(sdp: SessionDescription) {
+                pc.setLocalDescription(SdpObserverAdapter(), sdp)
+                Log.d(TAG, "ICE restart offer created (trigger=$trigger)")
+                onIceRestartOffer?.invoke(sdp.description)
+            }
+
+            override fun onCreateFailure(error: String) {
+                super.onCreateFailure(error)
+                Log.w(TAG, "ICE restart createOffer failed: $error")
+                restartCoordinator.onAttemptFailed(trigger)
+            }
+        }, MediaConstraints())
+    }
+
+    /** M-O (best-effort): if the currently-applied TURN credentials are close to their TTL,
+     *  refetch `/ice-servers` and apply via setConfiguration BEFORE restarting ICE so the new
+     *  offer gathers against fresh (not soon-to-expire) TURN creds. Uses the public endpoint —
+     *  see [setIceServers] doc for why this is best-effort rather than fully wired. Swallows all
+     *  failures: a refresh miss must never block the restart itself. */
+    private suspend fun maybeRefreshIceServersBeforeRestart(pc: PeerConnection) {
+        val ttlMs = iceServersTtlSec * 1000L
+        if (ttlMs <= 0L) return // unknown TTL — nothing to refresh against
+        val elapsed = System.currentTimeMillis() - iceServersFetchedAtMs
+        if (elapsed < ttlMs * ICE_SERVERS_REFRESH_THRESHOLD) return
+
+        try {
+            withTimeout(ICE_SERVERS_REFRESH_TIMEOUT_MS) {
+                val response = relayApi.getIceServersPublic()
+                val body = if (response.isSuccessful) response.body() else null
+                if (body != null) {
+                    setIceServers(body.iceServers, body.ttl)
+                    pc.setConfiguration(buildRtcConfig())
+                    Log.i(TAG, "Refreshed ICE servers before restart (ttl=${body.ttl}s)")
+                }
+            }
+        } catch (e: TimeoutCancellationException) {
+            Log.w(TAG, "ICE servers refresh before restart timed out")
+        } catch (e: CancellationException) {
+            throw e // real cancellation (e.g. session torn down) — must propagate, never swallow
+        } catch (e: Exception) {
+            Log.w(TAG, "ICE servers refresh before restart skipped: ${e.message}")
+        }
     }
 
     // ==================== Video PCs ====================
@@ -402,7 +588,30 @@ class WebRtcManager @Inject constructor(
         onVideoFrame = null
         onMainIceCandidate = null
         onVideoIceCandidate = null
+        onIceRestartOffer = null
+        onRequestPhase2Restart = null
 
+        // P5: cancel any pending/in-flight ICE-restart scheduling so a stale attempt can't fire
+        // (and call performIceRestartAttempt against a PC that's about to be disposed) after a
+        // fresh session has already started.
+        restartCoordinator.onIceHealthy()
+        restartT0Ms = 0L
+
+        disposePeerConnectionsOnly()
+        // NOTE: telemetryScope/restartScope are intentionally NOT cancelled here —
+        // WebRtcManager is a @Singleton reused across sessions, and cancelling would silently
+        // kill telemetry/restart-scheduling for every reconnect after the first. Their
+        // coroutines are short-lived (or self-cancelling via the guards above) under a
+        // SupervisorJob, so there is no leak.
+        Log.d(TAG, "Disposed all PeerConnections")
+    }
+
+    /** Tears down mainPc/videoPcs/DataChannels WITHOUT touching the callback lambdas
+     *  (onVideoFrame/onMainIceCandidate/onVideoIceCandidate/onIceRestartOffer/
+     *  onRequestPhase2Restart) — used both by [dispose] (full session teardown) and by
+     *  [createMainPcOffer] before re-creating the main PC on a restart_phase2 round trip, where
+     *  the session keeps running and those callbacks must stay wired. */
+    private fun disposePeerConnectionsOnly() {
         videoDcs.values.forEach { it.close() }
         videoDcs.clear()
         videoPcs.values.forEach { it.dispose() }
@@ -411,11 +620,6 @@ class WebRtcManager @Inject constructor(
         inputDc = null
         mainPc?.dispose()
         mainPc = null
-        // NOTE: telemetryScope is intentionally NOT cancelled here — WebRtcManager is
-        // a @Singleton reused across sessions, and cancelling would silently kill
-        // telemetry for every reconnect after the first. The short fire-and-forget IO
-        // coroutines self-complete under the SupervisorJob, so there is no leak.
-        Log.d(TAG, "Disposed all PeerConnections")
     }
 
     // ==================== ICE candidate diagnostics ====================

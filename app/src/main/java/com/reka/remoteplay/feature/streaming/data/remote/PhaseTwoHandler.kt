@@ -97,6 +97,19 @@ class PhaseTwoHandler @Inject constructor(
             webSocketClient.sendText(MessageParser.serialize(msg))
         }
 
+        // P5: send our iceRestart offer (Android is always the offerer, glare avoidance).
+        webRtcManager.onIceRestartOffer = { sdp ->
+            webSocketClient.sendText(MessageParser.serialize(IceRestartOfferMessage(sdp = sdp)))
+            Log.d(TAG, "Sent ice_restart_offer")
+        }
+
+        // P5: capability false, or ICE-restart retry budget exhausted — fall back to a full
+        // (but still automatic) Phase 2 renegotiation instead of tearing the session down.
+        webRtcManager.onRequestPhase2Restart = {
+            webSocketClient.sendText(MessageParser.serialize(RestartPhase2Message()))
+            Log.i(TAG, "Sent restart_phase2")
+        }
+
         // Listen for WebSocket messages
         messageJob?.cancel()
         messageJob = scope.launch {
@@ -159,6 +172,20 @@ class PhaseTwoHandler @Inject constructor(
                 Log.d(TAG, "ICE ready: ${msg.monitorCount} monitors")
                 _iceReady.value = true
                 connectionStateRepo.tryTransition(ConnectionState.ReadyToStream)
+            }
+
+            "ice_restart_answer" -> {
+                // Host's answer to our ice_restart_offer — apply on the live main PC.
+                val msg = MessageParser.parse<IceRestartAnswerMessage>(text) ?: return
+                Log.d(TAG, "Received ice_restart_answer")
+                webRtcManager.handleIceRestartAnswer(msg.sdp)
+            }
+
+            "request_ice_restart" -> {
+                // Optional third trigger (F10): host asks us to initiate — Android stays the
+                // offerer, this only decides WHEN, never flips who sends the offer.
+                Log.d(TAG, "Host requested ICE restart")
+                webRtcManager.triggerIceRestart(IceRestartTrigger.HOST_REQUESTED)
             }
 
             "streaming_started" -> {

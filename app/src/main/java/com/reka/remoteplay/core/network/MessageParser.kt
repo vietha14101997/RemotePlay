@@ -53,6 +53,9 @@ object MessageParser {
             "video_offer" -> parse<VideoOfferMessage>(rawJson)
             "audio_offer" -> parse<AudioOfferMessage>(rawJson)
             "reconnect_request" -> parse<ReconnectRequestMessage>(rawJson)
+            // Phase 5: ICE restart on network change
+            "ice_restart_answer" -> parse<IceRestartAnswerMessage>(rawJson)
+            "request_ice_restart" -> parse<RequestIceRestartMessage>(rawJson)
             // Phase 3
             "streaming_started" -> parse<StreamingStartedMessage>(rawJson)
             "config_updated" -> parse<ConfigUpdatedMessage>(rawJson)

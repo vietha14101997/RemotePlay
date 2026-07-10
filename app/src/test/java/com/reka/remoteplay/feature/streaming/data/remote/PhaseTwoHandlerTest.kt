@@ -9,6 +9,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -118,12 +119,69 @@ class PhaseTwoHandlerTest {
     fun `handleMessage error transitions to Error state`() = runTest {
         handler.startListening(backgroundScope)
         runCurrent()
-        
+
         val json = """{"type": "error", "message": "Failed", "code": "ERR01", "phase": 2}"""
         textMessages.emit(json)
         advanceUntilIdle()
 
         val errorState = connectionStateRepo.transitions.find { it is ConnectionState.Error } as? ConnectionState.Error
         assertEquals("Failed", errorState?.message)
+    }
+
+    // ---------------- P5: ICE Restart on Network Change routing ----------------
+
+    @Test
+    fun `startListening wires onIceRestartOffer to send ice_restart_offer`() = runTest {
+        val slot = slot<(String) -> Unit>()
+        every { webRtcManager.onIceRestartOffer = capture(slot) } just Runs
+
+        handler.startListening(backgroundScope)
+        runCurrent()
+
+        slot.captured.invoke("v=0 fake-offer-sdp")
+
+        verify { webSocketClient.sendText(match { it.contains("\"type\":\"ice_restart_offer\"") && it.contains("fake-offer-sdp") }) }
+    }
+
+    @Test
+    fun `startListening wires onRequestPhase2Restart to send restart_phase2`() = runTest {
+        val slot = slot<() -> Unit>()
+        every { webRtcManager.onRequestPhase2Restart = capture(slot) } just Runs
+
+        handler.startListening(backgroundScope)
+        runCurrent()
+
+        slot.captured.invoke()
+
+        verify { webSocketClient.sendText(match { it.contains("\"type\":\"restart_phase2\"") }) }
+    }
+
+    // NOTE: uses UnconfinedTestDispatcher rather than the default StandardTestDispatcher — see
+    // the comment on the equivalent PhaseOneHandlerTest cases; with Standard,
+    // backgroundScope's collector isn't reliably pumped by runCurrent()/advanceUntilIdle() from
+    // the outer test body in this project's kotlinx-coroutines-test version (matches the
+    // pre-existing @Ignore'd "Failing test" cases above, which hit the same limitation).
+    @Test
+    fun `handleMessage ice_restart_answer applies the answer on WebRtcManager`() = runTest(UnconfinedTestDispatcher()) {
+        handler.startListening(backgroundScope)
+        runCurrent()
+
+        val json = """{"type": "ice_restart_answer", "sdp": "v=0 fake-answer-sdp"}"""
+        textMessages.emit(json)
+        advanceUntilIdle()
+
+        verify { webRtcManager.handleIceRestartAnswer("v=0 fake-answer-sdp") }
+    }
+
+    @Test
+    fun `handleMessage request_ice_restart triggers a HOST_REQUESTED ICE restart`() = runTest(UnconfinedTestDispatcher()) {
+        handler.startListening(backgroundScope)
+        runCurrent()
+
+        val json = """{"type": "request_ice_restart"}"""
+        textMessages.emit(json)
+        advanceUntilIdle()
+
+        verify { webRtcManager.triggerIceRestart(IceRestartTrigger.HOST_REQUESTED) }
     }
 }

@@ -49,6 +49,25 @@ data class DisplayConfigMessage(
     @param:Json(name = "windowsScale") val windowsScale: Int = 125
 )
 
+// ==================== Phase 5: ICE Restart on Network Change (Client -> Server) ====================
+
+/** Android is ALWAYS the offerer for ICE restarts (glare avoidance) — sent after
+ *  `peerConnection.restartIce()` + `createOffer()` on the SAME live main PeerConnection. */
+@JsonClass(generateAdapter = true)
+data class IceRestartOfferMessage(
+    @param:Json(name = "type") val type: String = "ice_restart_offer",
+    @param:Json(name = "sdp") val sdp: String = ""
+)
+
+/** Fallback when the host doesn't advertise `supports_ice_restart`, or the fast ICE-restart
+ *  path has exhausted its retry budget — asks the host to do a full (but still automatic,
+ *  no re-pair) Phase 2 renegotiation. Matches the host's existing bare `restart_phase2`
+ *  handler (`PhaseProtocolHandler.Phase2.cs`), which was previously never invoked from Android. */
+@JsonClass(generateAdapter = true)
+data class RestartPhase2Message(
+    @param:Json(name = "type") val type: String = "restart_phase2"
+)
+
 // ==================== Phase 3: Client -> Server ====================
 
 @JsonClass(generateAdapter = true)

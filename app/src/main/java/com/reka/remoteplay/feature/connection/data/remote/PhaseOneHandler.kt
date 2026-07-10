@@ -11,6 +11,7 @@ import com.reka.remoteplay.core.network.MessageParser
 import com.reka.remoteplay.core.network.WebSocketClient
 import com.reka.remoteplay.feature.connection.domain.model.ConnectionState
 import com.reka.remoteplay.feature.connection.domain.repository.ConnectionStateRepository
+import com.reka.remoteplay.feature.streaming.data.remote.WebRtcManager
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -23,7 +24,9 @@ class PhaseOneHandler @Inject constructor(
     private val webSocketClient: WebSocketClient,
     private val connectionStateRepo: ConnectionStateRepository,
     private val codecDetector: CodecDetector,
-    private val speedTestClient: SpeedTestClient
+    private val speedTestClient: SpeedTestClient,
+    // P5 F8: hardware_info carries the host's supports_ice_restart capability flag.
+    private val webRtcManager: WebRtcManager
 ) {
     private val _serverInfo = MutableStateFlow<HardwareInfoMessage?>(null)
     val serverInfo: StateFlow<HardwareInfoMessage?> = _serverInfo.asStateFlow()
@@ -65,6 +68,7 @@ class PhaseOneHandler @Inject constructor(
                 Log.d(TAG, "Received hardware_info")
                 val msg = MessageParser.parse<HardwareInfoMessage>(text) ?: return
                 _serverInfo.value = msg
+                webRtcManager.setSupportsIceRestart(msg.supportsIceRestart)
 
                 connectionStateRepo.tryTransition(ConnectionState.AwaitingHardwareInfo)
 
@@ -109,5 +113,9 @@ class PhaseOneHandler @Inject constructor(
         _serverInfo.value = null
         _suggestedConfig.value = null
         speedTestClient.reset()
+        // P5 F8: don't let a previous host's capability leak into a fresh connection attempt
+        // before the new hardware_info arrives — default back to "unsupported" (safe: falls
+        // back to restart_phase2 rather than risking an ICE restart the new host can't apply).
+        webRtcManager.setSupportsIceRestart(false)
     }
 }
