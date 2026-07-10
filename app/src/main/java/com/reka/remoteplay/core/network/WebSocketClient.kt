@@ -44,14 +44,14 @@ class WebSocketClient @Inject constructor() {
     val reconnectAttempt: StateFlow<Int> = _reconnectAttempt.asStateFlow()
 
     private val _textMessages = MutableSharedFlow<String>(
-        replay = 0,
+        replay = 16,
         extraBufferCapacity = 64,
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
     val textMessages: SharedFlow<String> = _textMessages.asSharedFlow()
 
     private val _binaryMessages = MutableSharedFlow<ByteArray>(
-        replay = 0,
+        replay = 8,
         extraBufferCapacity = 64,
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
@@ -181,6 +181,7 @@ class WebSocketClient @Inject constructor() {
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
+                Log.d(TAG, "WS Message Received: $text")
                 if (text == "ping" || text.startsWith("ping:")) {
                     val seq = text.removePrefix("ping:").takeIf { it != text }
                     val pong = if (seq != null) "pong:$seq" else "pong"
@@ -197,7 +198,8 @@ class WebSocketClient @Inject constructor() {
                     _pongEvents.tryEmit(Unit)
                     return
                 }
-                _textMessages.tryEmit(text)
+                val emitted = _textMessages.tryEmit(text)
+                Log.d(TAG, "WS Message emitted to SharedFlow: $emitted (buffer: ${_textMessages.subscriptionCount.value} subscribers)")
             }
 
             override fun onMessage(webSocket: WebSocket, bytes: okio.ByteString) {

@@ -17,6 +17,7 @@ data class QrScannerConfig(
 
     companion object {
         fun fromJson(json: String): QrScannerConfig? {
+            android.util.Log.d("QrScannerConfig", "Parsing JSON: $json")
             return try {
                 val obj = JSONObject(json)
                 QrScannerConfig(
@@ -26,6 +27,7 @@ data class QrScannerConfig(
                     tunnelUrl = obj.optString("tunnelUrl", null)
                 )
             } catch (e: Exception) {
+                android.util.Log.e("QrScannerConfig", "Parse error: ${e.message}")
                 null
             }
         }

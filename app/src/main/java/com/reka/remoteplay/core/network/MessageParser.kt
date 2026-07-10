@@ -12,11 +12,18 @@ object MessageParser {
     private val mapAdapter = moshi.adapter(Map::class.java)
 
     fun getMessageType(rawJson: String): String? {
+        android.util.Log.e("MessageParser", "Attempting to get type from: ${rawJson.take(100)}")
         return try {
             @Suppress("UNCHECKED_CAST")
             val map = mapAdapter.fromJson(rawJson) as? Map<String, Any?>
-            map?.get("type") as? String
-        } catch (_: Exception) {
+            val type = map?.get("type") as? String
+            android.util.Log.e("MessageParser", "Extracted type: $type")
+            if (type == null) {
+                android.util.Log.w("MessageParser", "Unknown message type in: $rawJson")
+            }
+            type
+        } catch (e: Exception) {
+            android.util.Log.e("MessageParser", "Error getting message type: ${e.message}", e)
             null
         }
     }
@@ -24,7 +31,8 @@ object MessageParser {
     inline fun <reified T> parse(rawJson: String): T? {
         return try {
             moshi.adapter(T::class.java).fromJson(rawJson)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            android.util.Log.e("MessageParser", "Error parsing ${T::class.java.simpleName}: ${e.message}\nJSON: $rawJson", e)
             null
         }
     }

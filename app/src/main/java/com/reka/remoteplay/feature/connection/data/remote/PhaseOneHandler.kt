@@ -43,11 +43,14 @@ class PhaseOneHandler @Inject constructor(
     }
 
     fun startListening(scope: CoroutineScope, displayMetrics: DisplayMetrics) {
+        Log.i(TAG, "startListening called")
         listeningScope = scope
         
         messageJob?.cancel()
         messageJob = scope.launch {
+            Log.d(TAG, "Message collection job started")
             webSocketClient.textMessages.collect { text ->
+                Log.v(TAG, "Collected text message: ${text.take(50)}...")
                 handleTextMessage(text, displayMetrics)
             }
         }
@@ -61,40 +64,65 @@ class PhaseOneHandler @Inject constructor(
     }
 
     private fun handleTextMessage(text: String, displayMetrics: DisplayMetrics) {
-        val type = MessageParser.getMessageType(text) ?: return
+        android.util.Log.e("PhaseOneHandler", "!!! handleTextMessage START !!! Type detection for: ${text.take(100)}")
+        val type = MessageParser.getMessageType(text)
+        android.util.Log.e("PhaseOneHandler", "!!! Detected type: $type")
+        
+        if (type == null) return
 
-        when (type) {
-            "hardware_info" -> {
-                Log.d(TAG, "Received hardware_info")
-                val msg = MessageParser.parse<HardwareInfoMessage>(text) ?: return
-                _serverInfo.value = msg
-                webRtcManager.setSupportsIceRestart(msg.supportsIceRestart)
+        try {
+            when (type) {
+                "hardware_info" -> {
+                    android.util.Log.e("PhaseOneHandler", ">>> PROCESSING hardware_info <<<")
+                    val msg = MessageParser.parse<HardwareInfoMessage>(text)
+                    if (msg == null) {
+                        android.util.Log.e("PhaseOneHandler", "FAILED to parse hardware_info JSON")
+                        return
+                    }
+                    
+                    _serverInfo.value = msg
+                    webRtcManager.setSupportsIceRestart(msg.supportsIceRestart)
 
-                connectionStateRepo.tryTransition(ConnectionState.AwaitingHardwareInfo)
+                    // Force transition to ensure we don't get stuck due to ordering issues
+                    connectionStateRepo.forceTransition(ConnectionState.AwaitingHardwareInfo)
 
-                val codecs = codecDetector.detectCapabilities(displayMetrics)
-                val ack = HardwareInfoAckMessage(
-                    clientCodecs = codecs,
-                    perTrackPc = true
-                )
-                webSocketClient.sendText(MessageParser.serialize(ack))
+                    val codecs = codecDetector.detectCapabilities(displayMetrics)
+                    val ack = HardwareInfoAckMessage(
+                        clientCodecs = codecs,
+                        perTrackPc = true
+                    )
+                    val ackJson = MessageParser.serialize(ack)
+                    Log.d(TAG, "Sending hardware_info_ack: $ackJson")
+                    webSocketClient.sendText(ackJson)
 
-                // Speed test removed — wait directly for suggested_config
-                connectionStateRepo.tryTransition(ConnectionState.AwaitingSuggestedConfig)
+                    // Transition to next state
+                    val transitioned = connectionStateRepo.tryTransition(ConnectionState.AwaitingSuggestedConfig)
+                    Log.d(TAG, "Transitioned to AwaitingSuggestedConfig: $transitioned")
+                }
+
+                "speedtest_start" -> {
+                    Log.d(TAG, "Received speedtest_start")
+                    connectionStateRepo.tryTransition(ConnectionState.SpeedTesting)
+                    // The SpeedTestClient handles binary data via binaryJob
+                }
+
+                "suggested_config" -> {
+                    Log.d(TAG, "Received suggested_config")
+                    val msg = MessageParser.parse<SuggestedConfigMessage>(text) ?: return
+                    _suggestedConfig.value = msg
+                    connectionStateRepo.tryTransition(ConnectionState.ConfiguringSettings)
+                }
+
+                "error" -> {
+                    val msg = MessageParser.parse<ErrorMessage>(text) ?: return
+                    connectionStateRepo.forceTransition(
+                        ConnectionState.Error(msg.message, phase = msg.phase)
+                    )
+                }
             }
-
-            "suggested_config" -> {
-                val msg = MessageParser.parse<SuggestedConfigMessage>(text) ?: return
-                _suggestedConfig.value = msg
-                connectionStateRepo.tryTransition(ConnectionState.ConfiguringSettings)
-            }
-
-            "error" -> {
-                val msg = MessageParser.parse<ErrorMessage>(text) ?: return
-                connectionStateRepo.forceTransition(
-                    ConnectionState.Error(msg.message, phase = msg.phase)
-                )
-            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error handling message type $type: ${e.message}", e)
+            connectionStateRepo.forceTransition(ConnectionState.Error("Client error: ${e.message}"))
         }
     }
 

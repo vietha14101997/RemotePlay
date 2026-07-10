@@ -7,13 +7,14 @@ import androidx.navigation.compose.composable
 import com.reka.remoteplay.feature.auth.presentation.LoginRoute
 import com.reka.remoteplay.feature.connection.presentation.ConfigReviewRoute
 import com.reka.remoteplay.feature.connection.presentation.ConnectionRoute
+import com.reka.remoteplay.feature.connection.presentation.QrScannerRoute
 import com.reka.remoteplay.feature.streaming.presentation.StreamingRoute
 
 @Composable
 fun AppNavHost(navController: NavHostController) {
     NavHost(
         navController = navController,
-        startDestination = AppDestination.Login.route
+        startDestination = AppDestination.Connection.route
     ) {
         composable(AppDestination.Login.route) {
             LoginRoute(
@@ -35,10 +36,16 @@ fun AppNavHost(navController: NavHostController) {
                 onNavigateToConfigReview = {
                     navController.navigate(AppDestination.ConfigReview.route)
                 },
-                onNavigateToLogin = {
-                    navController.navigate(AppDestination.Login.route) {
-                        popUpTo(AppDestination.Connection.route) { inclusive = true }
-                    }
+                onNavigateToQrScanner = {
+                    navController.navigate(AppDestination.QrScanner.route)
+                }
+            )
+        }
+
+        composable(AppDestination.QrScanner.route) {
+            QrScannerRoute(
+                onNavigateBack = {
+                    navController.popBackStack()
                 }
             )
         }

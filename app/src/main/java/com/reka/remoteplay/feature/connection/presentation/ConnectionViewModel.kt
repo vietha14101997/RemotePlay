@@ -189,6 +189,7 @@ class ConnectionViewModel @Inject constructor(
         // Monitor WebSocket connection state changes
         viewModelScope.launch {
             webSocketClient.connectionState.collect { wsState ->
+                android.util.Log.d("ConnectionVM", "WS State Change: $wsState")
                 when (wsState) {
                     WsConnectionState.CONNECTING -> {
                         connectionStateRepo.tryTransition(ConnectionState.Connecting)
@@ -306,6 +307,50 @@ class ConnectionViewModel @Inject constructor(
         _hostInput.value = server.ip
         _portInput.value = server.port.toString()
         connect() // connect() calls stop() internally
+    }
+
+    fun connectWithQr(config: com.reka.remoteplay.core.model.QrScannerConfig) {
+        android.util.Log.i("ConnectionVM", "Connecting with QR: $config")
+        
+        // 1. Reset and prepare state first
+        stopScan()
+        phaseOneHandler.reset()
+        phaseTwoHandler.reset()
+        
+        // 2. Start listening BEFORE initiating the physical connection
+        // This ensures we don't miss the immediate 'hardware_info' message
+        val dm = getApplication<Application>().resources.displayMetrics
+        android.util.Log.i("ConnectionVM", "Starting PhaseOneHandler listening (Pre-connect)")
+        phaseOneHandler.startListening(viewModelScope, dm)
+
+        val tunnelUrl = config.tunnelUrl
+        if (!tunnelUrl.isNullOrEmpty()) {
+            // Internet connection via Cloudflare Tunnel
+            val host = tunnelUrl.replace("https://", "").replace("http://", "").trimEnd('/')
+            _hostInput.value = host
+            _portInput.value = "443"
+            
+            viewModelScope.launch {
+                preferences.saveServer(SavedServer(name = "Remote PC", host = host, port = 443))
+            }
+            
+            connectionStateRepo.tryTransition(ConnectionState.Connecting)
+            webSocketClient.connectTunnel(tunnelUrl)
+        } else {
+            // LAN connection
+            val host = config.ip
+            val port = config.port
+            
+            _hostInput.value = host
+            _portInput.value = port.toString()
+            
+            viewModelScope.launch {
+                preferences.saveServer(SavedServer(name = "Local PC", host = host, port = port))
+            }
+
+            connectionStateRepo.tryTransition(ConnectionState.Connecting)
+            webSocketClient.connect(host, port, isUsb = false)
+        }
     }
 
     fun connect() {

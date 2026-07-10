@@ -8,8 +8,8 @@ import com.reka.remoteplay.feature.connection.domain.model.ConnectionState
 @Composable
 fun ConnectionRoute(
     onNavigateToConfigReview: () -> Unit,
-    onNavigateToLogin: () -> Unit,
-    viewModel: ConnectionViewModel = hiltViewModel()
+    onNavigateToQrScanner: () -> Unit,
+    viewModel: ConnectionViewModel = hiltViewModel(),
 ) {
     val connectionState by viewModel.connectionState.collectAsState()
     val isViewerMode by viewModel.isViewerMode.collectAsState()
@@ -76,6 +76,7 @@ fun ConnectionRoute(
         onConnectToServer = viewModel::connectToServer,
         onConnectToDiscovered = viewModel::connectToDiscovered,
         onRemoveServer = viewModel::removeServer,
+        onScanQR = onNavigateToQrScanner,
         relayDevices = relayDevices,
         diagnostics = diagnostics,
         isLoggedIn = isLoggedIn,
@@ -87,10 +88,20 @@ fun ConnectionRoute(
         onGuestDeviceIdChange = viewModel::onGuestDeviceIdChange,
         onGuestPasswordChange = viewModel::onGuestPasswordChange,
         onGuestConnect = viewModel::connectAsGuest,
-        onLogout = {
-            viewModel.logout()
-            onNavigateToLogin()
-        }
+    )
+}
+
+@Composable
+fun QrScannerRoute(
+    onNavigateBack: () -> Unit,
+    viewModel: ConnectionViewModel = hiltViewModel()
+) {
+    QrScannerScreen(
+        onResult = { config ->
+            viewModel.connectWithQr(config)
+            onNavigateBack()
+        },
+        onBack = onNavigateBack
     )
 }
 

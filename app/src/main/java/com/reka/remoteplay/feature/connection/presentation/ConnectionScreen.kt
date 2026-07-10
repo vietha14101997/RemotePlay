@@ -8,7 +8,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Login
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -45,7 +44,7 @@ fun ConnectionScreen(
     onConnectToServer: (SavedServer) -> Unit,
     onConnectToDiscovered: (ServerDiscoveryService.DiscoveredServer) -> Unit,
     onRemoveServer: (SavedServer) -> Unit,
-    onLogout: () -> Unit,
+    onScanQR: () -> Unit = {},
     relayDevices: List<RelayDevice> = emptyList(),
     isLoggedIn: Boolean = false,
     onConnectToRelayDevice: (RelayDevice) -> Unit = {},
@@ -56,7 +55,7 @@ fun ConnectionScreen(
     onGuestDeviceIdChange: (String) -> Unit = {},
     onGuestPasswordChange: (String) -> Unit = {},
     onGuestConnect: () -> Unit = {},
-    diagnostics: ConnectionDiagnostics? = null
+    diagnostics: ConnectionDiagnostics? = null,
 ) {
     val isBusy = connectionState.isConnected
 
@@ -79,18 +78,15 @@ fun ConnectionScreen(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End
             ) {
-                if (isLoggedIn) {
-                    TextButton(onClick = onLogout) {
-                        Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = "Logout", tint = AppRed, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Logout", color = AppRed, fontSize = 14.sp)
-                    }
-                } else {
-                    TextButton(onClick = onLogout) {
-                        Icon(Icons.AutoMirrored.Filled.Login, contentDescription = "Sign In", tint = AppAccent, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Sign In", color = AppAccent, fontSize = 14.sp)
-                    }
+                TextButton(onClick = onScanQR) {
+                    Icon(
+                        imageVector = Icons.Default.QrCodeScanner,
+                        contentDescription = "Scan QR",
+                        tint = AppAccent,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Scan QR", color = AppAccent, fontSize = 14.sp)
                 }
             }
 
@@ -588,7 +584,7 @@ private fun ConnectionScreenIdlePreview() {
             onConnectToServer = {},
             onConnectToDiscovered = {},
             onRemoveServer = {},
-            onLogout = {}
+            onScanQR = {}
         )
     }
 }
@@ -610,7 +606,7 @@ private fun ConnectionScreenScanningPreview() {
             onConnectToServer = {},
             onConnectToDiscovered = {},
             onRemoveServer = {},
-            onLogout = {}
+            onScanQR = {}
         )
     }
 }
@@ -630,7 +626,7 @@ private fun ConnectionScreenConnectingPreview() {
             onConnectToServer = {},
             onConnectToDiscovered = {},
             onRemoveServer = {},
-            onLogout = {}
+            onScanQR = {}
         )
     }
 }
