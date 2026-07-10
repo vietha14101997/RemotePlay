@@ -10,7 +10,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import com.reka.remoteplay.core.network.relay.ConnectionTelemetryRequest
 import com.reka.remoteplay.core.network.relay.IceServerConfig
+import com.reka.remoteplay.core.network.relay.RelayApi
 import org.webrtc.*
 import java.nio.ByteBuffer
 import javax.inject.Inject
@@ -18,9 +20,15 @@ import javax.inject.Singleton
 
 @Singleton
 class WebRtcManager @Inject constructor(
-    @param:ApplicationContext private val context: Context
+    @param:ApplicationContext private val context: Context,
+    private val relayApi: RelayApi
 ) {
     private var factory: PeerConnectionFactory? = null
+
+    // Fire-and-forget scope for P6 connection telemetry (never blocks/affects streaming).
+    private val telemetryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // L2: report telemetry once per session — ICE→CONNECTED can fire repeatedly on flaps.
+    @Volatile private var telemetryReported = false
     // STUN only by default — enables P2P across different networks without TURN bandwidth cost.
     // Multiple STUN providers for ISP-blocking redundancy: Google + Cloudflare + Nextcloud.
     // TURN servers can be added via setIceServers() when needed (4G fallback).
@@ -90,6 +98,13 @@ class WebRtcManager @Inject constructor(
 
     companion object {
         private const val TAG = "WebRtcManager"
+
+        /** Derive IP family from a candidate address. IPv6 literals contain ':'. */
+        internal fun addressFamilyOf(address: String?): String = when {
+            address.isNullOrBlank() -> "unknown"
+            address.contains(':') -> "ipv6"
+            else -> "ipv4"
+        }
     }
 
     fun initialize() {
@@ -303,17 +318,34 @@ class WebRtcManager @Inject constructor(
 
                     val localCandidateId = stats.members["localCandidateId"] as? String ?: continue
 
-                    // Find the local candidate to check its type
+                    // Find the local candidate to check its type + IP family
                     for (candStats in report.statsMap.values) {
                         if (candStats.id == localCandidateId) {
                             val candidateType = candStats.members["candidateType"] as? String ?: "unknown"
                             _connectionType.value = candidateType
-                            Log.i(TAG, "Connection type: $candidateType (${if (candidateType == "relay") "TURN" else "P2P"})")
+                            val address = candStats.members["address"] as? String
+                                ?: candStats.members["ip"] as? String
+                            val family = addressFamilyOf(address)
+                            Log.i(TAG, "Connection type: $candidateType/$family (${if (candidateType == "relay") "TURN" else "P2P"})")
+                            reportConnectionTelemetry(candidateType, family)
                             return@getStats
                         }
                     }
                 }
             }
+        }
+    }
+
+    /** P6 telemetry: report the selected pair type + IP family to the relay,
+     *  fire-and-forget. Failures are swallowed — telemetry must never affect the
+     *  session. No PII is sent (type + family only, never the address). */
+    private fun reportConnectionTelemetry(pairType: String, family: String) {
+        if (telemetryReported) return
+        telemetryReported = true
+        telemetryScope.launch {
+            runCatching {
+                relayApi.reportConnectionTelemetry(ConnectionTelemetryRequest(pairType, family))
+            }.onFailure { Log.d(TAG, "telemetry report skipped: ${it.message}") }
         }
     }
 
@@ -379,6 +411,10 @@ class WebRtcManager @Inject constructor(
         inputDc = null
         mainPc?.dispose()
         mainPc = null
+        // NOTE: telemetryScope is intentionally NOT cancelled here — WebRtcManager is
+        // a @Singleton reused across sessions, and cancelling would silently kill
+        // telemetry for every reconnect after the first. The short fire-and-forget IO
+        // coroutines self-complete under the SupervisorJob, so there is no leak.
         Log.d(TAG, "Disposed all PeerConnections")
     }
 
@@ -392,6 +428,7 @@ class WebRtcManager @Inject constructor(
         _iceGatherDurationMs.value = 0L
         gatherStartMs = System.currentTimeMillis()
         gatherRunning = true
+        telemetryReported = false // new connection attempt → allow one fresh telemetry report
     }
 
     private fun countIceCandidateType(sdp: String) {

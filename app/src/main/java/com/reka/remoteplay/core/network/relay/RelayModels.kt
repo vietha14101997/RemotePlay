@@ -22,6 +22,14 @@ data class RegisterResponse(@param:Json(name = "user_id") val userId: String, va
 @JsonClass(generateAdapter = true)
 data class RefreshRequest(@param:Json(name = "refresh_token") val refreshToken: String)
 
+/** P6 telemetry: reported fire-and-forget after ICE connects. No PII — only the
+ *  selected candidate-pair type (host/srflx/prflx/relay) + IP family (ipv4/ipv6). */
+@JsonClass(generateAdapter = true)
+data class ConnectionTelemetryRequest(
+    @param:Json(name = "selected_pair_type") val selectedPairType: String,
+    @param:Json(name = "address_family") val addressFamily: String
+)
+
 @JsonClass(generateAdapter = true)
 data class DevicesResponse(val devices: List<RelayDevice>)
 
