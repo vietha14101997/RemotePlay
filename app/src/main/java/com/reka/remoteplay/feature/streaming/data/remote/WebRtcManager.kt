@@ -153,6 +153,10 @@ class WebRtcManager @Inject constructor(
         // M-O: refresh ICE servers before a restart once 80% of their TTL has elapsed.
         private const val ICE_SERVERS_REFRESH_THRESHOLD = 0.8
         private const val ICE_SERVERS_REFRESH_TIMEOUT_MS = 3_000L
+
+        /** How long the first gathering generation gets to produce a relay candidate
+         *  (with TURN configured) before the early-restart kick fires. */
+        private const val TURN_ALLOCATION_WATCH_MS = 3_000L
     }
 
     fun initialize() {
@@ -311,6 +315,33 @@ class WebRtcManager @Inject constructor(
                 callback(sdp.description)
             }
         }, MediaConstraints())
+
+        scheduleTurnAllocationWatch()
+    }
+
+    /**
+     * Early TURN-stall detector. Field logs (2026-07-11, Viettel 4G) show the FIRST
+     * gathering generation after PC creation sometimes never yields a relay candidate,
+     * while the regather done by an ICE restart allocates within ~250ms every time.
+     * Instead of waiting ~15s for libwebrtc to reach FAILED, trigger the proven
+     * restart path as soon as the stall is evident.
+     */
+    private fun scheduleTurnAllocationWatch() {
+        val turnConfigured = iceServers.any { server ->
+            server.urls.any { it.startsWith("turn:") || it.startsWith("turns:") }
+        }
+        if (!turnConfigured) return
+
+        restartScope.launch {
+            delay(TURN_ALLOCATION_WATCH_MS)
+            val state = _iceConnectionState.value
+            val alreadyUsable = state == PeerConnection.IceConnectionState.CONNECTED ||
+                state == PeerConnection.IceConnectionState.COMPLETED
+            if (_iceRelayCount.value == 0 && !alreadyUsable && mainPc != null) {
+                Log.w(TAG, "No relay candidate ${TURN_ALLOCATION_WATCH_MS}ms after PC creation despite TURN config — kicking early ICE restart")
+                triggerIceRestart(IceRestartTrigger.ICE_FAILED)
+            }
+        }
     }
 
     fun handleMainAnswer(answerSdp: String) {

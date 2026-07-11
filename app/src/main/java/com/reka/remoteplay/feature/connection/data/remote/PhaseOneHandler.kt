@@ -92,9 +92,16 @@ class PhaseOneHandler @Inject constructor(
                     connectionStateRepo.forceTransition(ConnectionState.AwaitingHardwareInfo)
 
                     val codecs = codecDetector.detectCapabilities(displayMetrics)
+                    // Relay sessions run single-PC mode: per-track video PCs have no
+                    // ICE-restart path, so on a TURN-dependent (cross-network) session
+                    // one failed video PC bricks the stream. Keeping everything on the
+                    // main PC also means a single TURN allocation. LAN/tunnel sessions
+                    // keep per-track PCs for SCTP head-of-line isolation.
+                    val perTrack = !webSocketClient.isRelayTransport
+                    if (!perTrack) Log.i(TAG, "Relay transport: requesting single-PC mode (perTrackPc=false)")
                     val ack = HardwareInfoAckMessage(
                         clientCodecs = codecs,
-                        perTrackPc = true
+                        perTrackPc = perTrack
                     )
                     val ackJson = MessageParser.serialize(ack)
                     Log.d(TAG, "Sending hardware_info_ack: $ackJson")

@@ -71,7 +71,16 @@ class WebSocketClient @Inject constructor() {
     )
     val pongEvents: SharedFlow<Unit> = _pongEvents.asSharedFlow()
 
+    /**
+     * True when the current session goes through the relay server (room/guest/session
+     * paths) rather than direct LAN/tunnel signaling. Relay sessions are cross-network
+     * by definition, so the client requests single-PC mode (no per-track video PCs).
+     */
+    var isRelayTransport: Boolean = false
+        private set
+
     fun connect(host: String, port: Int = 8288, token: String? = null, isUsb: Boolean = false) {
+        isRelayTransport = false
         val url = buildString {
             append("ws://")
             append(host)
@@ -100,6 +109,7 @@ class WebSocketClient @Inject constructor() {
      * Uses wss:// scheme since tunnel provides HTTPS.
      */
     fun connectTunnel(tunnelUrl: String, token: String? = null) {
+        isRelayTransport = false
         val url = buildString {
             append(normalizeWsUrl(tunnelUrl))
             append("/signal")
@@ -113,6 +123,7 @@ class WebSocketClient @Inject constructor() {
      * Uses WSS + JWT token for authentication.
      */
     fun connectRelay(relayUrl: String, sessionId: String, token: String) {
+        isRelayTransport = true
         val url = "${normalizeWsUrl(relayUrl)}/ws/client?session=$sessionId&token=$token"
         connectWithUrl(url)
     }
@@ -121,6 +132,7 @@ class WebSocketClient @Inject constructor() {
      * Connect via relay for guest session (no JWT token needed).
      */
     fun connectGuestRelay(relayUrl: String, sessionId: String) {
+        isRelayTransport = true
         val url = "${normalizeWsUrl(relayUrl)}/ws/guest?session=$sessionId"
         connectWithUrl(url)
     }
@@ -129,6 +141,7 @@ class WebSocketClient @Inject constructor() {
      * Connect to room via relay server.
      */
     fun connectRoom(relayUrl: String, roomId: String, clientId: String) {
+        isRelayTransport = true
         val url = "${normalizeWsUrl(relayUrl)}/ws/room?room_id=$roomId&client_id=$clientId"
         connectWithUrl(url)
     }
