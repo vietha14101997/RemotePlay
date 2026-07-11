@@ -5,6 +5,7 @@ import com.reka.remoteplay.core.model.*
 import com.reka.remoteplay.core.util.QualityPreset
 import com.reka.remoteplay.core.network.MdnsResolver
 import com.reka.remoteplay.core.network.MessageParser
+import com.reka.remoteplay.core.network.RelayMediaProtocol
 import com.reka.remoteplay.core.network.WebSocketClient
 import com.reka.remoteplay.feature.connection.domain.model.ConnectionState
 import com.reka.remoteplay.feature.connection.domain.repository.ConnectionStateRepository
@@ -71,6 +72,7 @@ class PhaseTwoHandler @Inject constructor(
     }
 
     private var messageJob: Job? = null
+    private var binaryJob: Job? = null
 
     // Singleton-owned scope: same navigation-survival fix as PhaseOneHandler — the viewer
     // path starts Phase 2 from the QR screen's ViewModel, whose scope dies when the screen
@@ -115,11 +117,32 @@ class PhaseTwoHandler @Inject constructor(
             Log.i(TAG, "Sent restart_phase2")
         }
 
+        // Input back-channel for relay-media mode: send over the room WS.
+        webRtcManager.onRelayInput = { data ->
+            webSocketClient.sendBinary(RelayMediaProtocol.wrapInput(data))
+        }
+
         // Listen for WebSocket messages
         messageJob?.cancel()
         messageJob = handlerScope.launch {
             webSocketClient.textMessages.collect { text ->
                 handleMessage(text)
+            }
+        }
+
+        // Relay-media binary demux: video/audio/cursor arrive as tagged binary WS
+        // frames when the host falls back from WebRTC. Only consumed in relay mode;
+        // non-envelope binary (Phase-1 speed test) is ignored here.
+        binaryJob?.cancel()
+        binaryJob = handlerScope.launch {
+            webSocketClient.binaryMessages.collect { bytes ->
+                if (!webRtcManager.relayMediaMode) return@collect
+                if (!RelayMediaProtocol.isMediaEnvelope(bytes)) return@collect
+                when (RelayMediaProtocol.channelOf(bytes)) {
+                    RelayMediaProtocol.CHANNEL_VIDEO -> webRtcManager.feedRelayVideo(RelayMediaProtocol.payload(bytes))
+                    RelayMediaProtocol.CHANNEL_AUDIO -> webRtcManager.feedRelayAudio(RelayMediaProtocol.payload(bytes))
+                    RelayMediaProtocol.CHANNEL_CURSOR -> webRtcManager.feedRelayCursor(RelayMediaProtocol.payload(bytes))
+                }
             }
         }
     }
@@ -193,6 +216,22 @@ class PhaseTwoHandler @Inject constructor(
                 webRtcManager.handleIceRestartAnswer(msg.sdp)
             }
 
+            "media_relay_start" -> {
+                // Host gave up on WebRTC (both peers behind CGNAT) and is now sending
+                // media over the room WebSocket. Enter relay mode + unblock streaming
+                // (relay has no ice_ready). Frames arrive via the binaryMessages demux.
+                Log.i(TAG, "Media relay mode ON — media over WebSocket (WebRTC unavailable)")
+                webRtcManager.relayMediaMode = true
+                _iceReady.value = true
+                connectionStateRepo.tryTransition(ConnectionState.ReadyToStream)
+            }
+
+            "media_relay_stop" -> {
+                // A background ICE restart restored P2P — media returns to WebRTC.
+                Log.i(TAG, "Media relay mode OFF — WebRTC path resumed")
+                webRtcManager.relayMediaMode = false
+            }
+
             "request_ice_restart" -> {
                 // Optional third trigger (F10): host asks us to initiate — Android stays the
                 // offerer, this only decides WHEN, never flips who sends the offer.
@@ -259,6 +298,9 @@ class PhaseTwoHandler @Inject constructor(
     fun reset() {
         messageJob?.cancel()
         messageJob = null
+        binaryJob?.cancel()
+        binaryJob = null
+        webRtcManager.relayMediaMode = false
         webRtcManager.dispose()
         _monitors.value = emptyList()
         _iceReady.value = false

@@ -597,7 +597,40 @@ class WebRtcManager @Inject constructor(
 
     // ==================== Input ====================
 
+    // ==================== Relay-media fallback (DERP) ====================
+    // When WebRTC is unavailable, media is carried over the room WebSocket. These
+    // let the phase handler feed decoded-bound frames in and route input out, reusing
+    // the exact same decoder/audio/input paths as the P2P DataChannels.
+
+    /** On while media flows over the relay instead of WebRTC. */
+    @Volatile var relayMediaMode: Boolean = false
+
+    /** Set by the phase handler to send input back to the host over the room WS. */
+    var onRelayInput: ((ByteArray) -> Unit)? = null
+
+    /** Feed a relay video chunk (protocol-v2 framed, envelope already stripped). */
+    fun feedRelayVideo(payload: ByteArray) {
+        if (payload.size < 2) return
+        val monitorIdx = payload[1].toInt() and 0xFF
+        onVideoFrame?.invoke(monitorIdx, payload)
+    }
+
+    /** Feed relay audio PCM (envelope already stripped). */
+    fun feedRelayAudio(pcm: ByteArray) {
+        _audioData.tryEmit(pcm)
+    }
+
+    /** Feed a relay cursor message (envelope already stripped). */
+    fun feedRelayCursor(data: ByteArray) {
+        _cursorData.tryEmit(data)
+    }
+
     fun sendInput(data: ByteArray) {
+        // Relay mode: input goes back to the host over the WebSocket, not a DataChannel.
+        if (relayMediaMode) {
+            onRelayInput?.invoke(data)
+            return
+        }
         val dc = inputDc ?: return
         if (dc.state() != DataChannel.State.OPEN) return
         dc.send(DataChannel.Buffer(ByteBuffer.wrap(data), true))
