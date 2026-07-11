@@ -3,6 +3,9 @@ package com.reka.remoteplay.core.network.relay
 import com.squareup.moshi.Json
 import com.squareup.moshi.JsonClass
 
+/** Fallback relay when none is saved yet (user's own VPS, coturn co-located). */
+const val DEFAULT_RELAY_URL = "http://180.93.2.132:8443"
+
 @JsonClass(generateAdapter = true)
 data class LoginRequest(val email: String, val password: String, @param:Json(name = "device_name") val deviceName: String)
 

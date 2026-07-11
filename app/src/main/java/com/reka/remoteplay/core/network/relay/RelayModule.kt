@@ -29,7 +29,7 @@ object RelayModule {
         val client = OkHttpClient.Builder()
             .addInterceptor { chain ->
                 val original = chain.request()
-                val baseUrl = (tokenManager.relayUrl ?: "http://34.87.150.141:8443").trimEnd('/')
+                val baseUrl = (tokenManager.relayUrl ?: DEFAULT_RELAY_URL).trimEnd('/')
                 
                 val requestBuilder = original.newBuilder()
                 

@@ -311,7 +311,19 @@ class ConnectionViewModel @Inject constructor(
 
     fun connectWithQr(config: com.reka.remoteplay.core.model.QrScannerConfig) {
         android.util.Log.i("ConnectionVM", "Connecting with QR: $config")
-        
+
+        // Relay path first: signaling via the user's own VPS — stable URL, no
+        // Cloudflare quick-tunnel rate limits. Reuses the proven guest-join flow.
+        if (config.hasRelay) {
+            stopScan()
+            tokenManager.relayUrl = config.relayUrl!!.trimEnd('/')
+            _guestDeviceId.value = config.guestId!!
+            _guestPassword.value = config.guestPass!!
+            android.util.Log.i("ConnectionVM", "QR carries relay room ${config.guestId} — connecting via relay ${config.relayUrl}")
+            connectAsGuest()
+            return
+        }
+
         // 1. Reset and prepare state first
         stopScan()
         phaseOneHandler.reset()

@@ -75,6 +75,5 @@ class GuestConnectionRepository @Inject constructor(
 
     companion object {
         private const val TAG = "GuestConnectionRepo"
-        const val DEFAULT_RELAY_URL = "http://34.87.150.141:8443"
     }
 }
