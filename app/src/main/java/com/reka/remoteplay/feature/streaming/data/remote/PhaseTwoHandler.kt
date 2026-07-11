@@ -131,18 +131,21 @@ class PhaseTwoHandler @Inject constructor(
         }
 
         // Relay-media binary demux: video/audio/cursor arrive as tagged binary WS
-        // frames when the host falls back from WebRTC. Only consumed in relay mode;
-        // non-envelope binary (Phase-1 speed test) is ignored here.
+        // frames when the host falls back from WebRTC. Wired as a DIRECT callback on
+        // the OkHttp reader thread — ordered and lossless, same threading model as
+        // the P2P DataChannel observer. The binaryMessages SharedFlow is deliberately
+        // NOT used: its replay=8 + DROP_OLDEST semantics replay stale chunks and
+        // silently drop 60KB video chunks under load, corrupting the H265 stream.
+        // No relayMediaMode gate either: the host only emits envelopes in relay mode,
+        // and gating on the flag would race the media_relay_start text message
+        // (handled on a separate coroutine) against the first video chunks.
         binaryJob?.cancel()
-        binaryJob = handlerScope.launch {
-            webSocketClient.binaryMessages.collect { bytes ->
-                if (!webRtcManager.relayMediaMode) return@collect
-                if (!RelayMediaProtocol.isMediaEnvelope(bytes)) return@collect
-                when (RelayMediaProtocol.channelOf(bytes)) {
-                    RelayMediaProtocol.CHANNEL_VIDEO -> webRtcManager.feedRelayVideo(RelayMediaProtocol.payload(bytes))
-                    RelayMediaProtocol.CHANNEL_AUDIO -> webRtcManager.feedRelayAudio(RelayMediaProtocol.payload(bytes))
-                    RelayMediaProtocol.CHANNEL_CURSOR -> webRtcManager.feedRelayCursor(RelayMediaProtocol.payload(bytes))
-                }
+        binaryJob = null
+        webSocketClient.onRelayMediaBinary = { bytes ->
+            when (RelayMediaProtocol.channelOf(bytes)) {
+                RelayMediaProtocol.CHANNEL_VIDEO -> webRtcManager.feedRelayVideo(RelayMediaProtocol.payload(bytes))
+                RelayMediaProtocol.CHANNEL_AUDIO -> webRtcManager.feedRelayAudio(RelayMediaProtocol.payload(bytes))
+                RelayMediaProtocol.CHANNEL_CURSOR -> webRtcManager.feedRelayCursor(RelayMediaProtocol.payload(bytes))
             }
         }
     }
@@ -300,6 +303,7 @@ class PhaseTwoHandler @Inject constructor(
         messageJob = null
         binaryJob?.cancel()
         binaryJob = null
+        webSocketClient.onRelayMediaBinary = null // unhook direct media sink
         webRtcManager.relayMediaMode = false
         webRtcManager.dispose()
         _monitors.value = emptyList()

@@ -77,7 +77,17 @@ class WebSocketClient @Inject constructor() {
      * by definition, so the client requests single-PC mode (no per-track video PCs).
      */
     var isRelayTransport: Boolean = false
-        private set
+
+    /**
+     * Direct sink for relay-media binary envelopes (0xF1..0xF5). Invoked synchronously
+     * on the OkHttp reader thread — same threading model as the P2P DataChannel
+     * observer. MUST bypass [binaryMessages]: that flow has replay=8 + DROP_OLDEST,
+     * which replays stale chunks to new collectors and silently drops chunks under
+     * load — either one corrupts the chunked H265 stream beyond recovery (a missing
+     * 60KB mid-frame chunk breaks the NAL and poisons every following P-frame).
+     */
+    @Volatile
+    var onRelayMediaBinary: ((ByteArray) -> Unit)? = null
 
     fun connect(host: String, port: Int = 8288, token: String? = null, isUsb: Boolean = false) {
         isRelayTransport = false
@@ -223,7 +233,16 @@ class WebSocketClient @Inject constructor() {
             }
 
             override fun onMessage(webSocket: WebSocket, bytes: okio.ByteString) {
-                _binaryMessages.tryEmit(bytes.toByteArray())
+                val data = bytes.toByteArray()
+                // Relay-media fast path: ordered + lossless delivery on the reader
+                // thread. See onRelayMediaBinary docs — the SharedFlow below would
+                // drop/replay chunks and corrupt the relay video stream.
+                val mediaSink = onRelayMediaBinary
+                if (mediaSink != null && RelayMediaProtocol.isMediaEnvelope(data)) {
+                    mediaSink(data)
+                    return
+                }
+                _binaryMessages.tryEmit(data)
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
