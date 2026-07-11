@@ -160,7 +160,10 @@ class IceRestartCoordinator(
         private const val TAG = "IceRestartCoordinator"
 
         /** Grace period for a fired attempt to reach CONNECTED before it's treated as failed
-         *  and retried/backed-off, independent of whatever iceConnectionState reports next. */
-        const val DEFAULT_WATCHDOG_TIMEOUT_MS = 5_000L
+         *  and retried/backed-off, independent of whatever iceConnectionState reports next.
+         *  Sized for TURN on hostile mobile networks: field logs (2026-07-11, Viettel 4G)
+         *  showed the coturn allocation alone taking ~16s when the carrier/VPN throttles
+         *  UDP 3478 — a 5s watchdog aborted every attempt just before it could complete. */
+        const val DEFAULT_WATCHDOG_TIMEOUT_MS = 20_000L
     }
 }
