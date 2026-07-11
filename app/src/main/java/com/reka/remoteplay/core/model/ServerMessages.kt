@@ -1,5 +1,6 @@
 package com.reka.remoteplay.core.model
 
+import com.reka.remoteplay.core.network.relay.IceServerConfig
 import com.squareup.moshi.Json
 import com.squareup.moshi.JsonClass
 
@@ -64,7 +65,10 @@ data class ConfigProgressMessage(
 data class ConfigCompleteMessage(
     @param:Json(name = "type") val type: String = "config_complete",
     @param:Json(name = "monitors") val monitors: List<MonitorInfoDto> = emptyList(),
-    @param:Json(name = "captureReady") val captureReady: Boolean = false
+    @param:Json(name = "captureReady") val captureReady: Boolean = false,
+    // Optional STUN/TURN servers with ephemeral coturn credentials minted by the host.
+    // Lets TURN work over LAN/tunnel signaling without the client contacting the relay.
+    @param:Json(name = "iceServers") val iceServers: List<IceServerConfig>? = null
 )
 
 @JsonClass(generateAdapter = true)

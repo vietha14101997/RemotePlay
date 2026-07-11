@@ -37,12 +37,13 @@ class WebRtcManager @Inject constructor(
     // STUN only by default — enables P2P across different networks without TURN bandwidth cost.
     // Multiple STUN providers for ISP-blocking redundancy: Google + Cloudflare + Nextcloud.
     // TURN servers can be added via setIceServers() when needed (4G fallback).
-    private var iceServers: List<PeerConnection.IceServer> = listOf(
+    private val defaultStunServers: List<PeerConnection.IceServer> = listOf(
         PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
         PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer(),
         PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer(),
         PeerConnection.IceServer.builder("stun:stun.nextcloud.com:3478").createIceServer()
     )
+    private var iceServers: List<PeerConnection.IceServer> = defaultStunServers
 
     // Main PC (audio + control DataChannels)
     private var mainPc: PeerConnection? = null
@@ -179,15 +180,18 @@ class WebRtcManager @Inject constructor(
      *   GuestConnectionRepository.fetchIceServers()) don't thread the TTL through yet.
      */
     fun setIceServers(servers: List<IceServerConfig>, ttlSec: Int = 0) {
-        iceServers = servers.map { config ->
+        val provided = servers.map { config ->
             val builder = PeerConnection.IceServer.builder(config.urls)
             if (config.username != null) builder.setUsername(config.username)
             if (config.credential != null) builder.setPassword(config.credential)
             builder.createIceServer()
         }
+        // Keep the default STUN list as a floor: provided servers (TURN creds) first,
+        // defaults appended so replacing the list never loses STUN redundancy.
+        iceServers = provided + defaultStunServers
         iceServersFetchedAtMs = System.currentTimeMillis()
         iceServersTtlSec = ttlSec
-        Log.d(TAG, "ICE servers updated: ${iceServers.size} server(s), ttl=${ttlSec}s")
+        Log.d(TAG, "ICE servers updated: ${provided.size} provided + ${defaultStunServers.size} default STUN, ttl=${ttlSec}s")
     }
 
     private fun buildRtcConfig(): PeerConnection.RTCConfiguration {

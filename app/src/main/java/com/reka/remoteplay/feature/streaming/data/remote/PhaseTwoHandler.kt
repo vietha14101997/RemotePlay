@@ -128,6 +128,13 @@ class PhaseTwoHandler @Inject constructor(
                 _monitors.value = msg.monitors
                 Log.d(TAG, "Config complete: ${msg.monitors.size} monitors, captureReady=${msg.captureReady}")
 
+                // Host-provided ICE servers (ephemeral TURN credentials) must be applied
+                // BEFORE any PeerConnection is created — covers main PC and all video PCs.
+                msg.iceServers?.takeIf { it.isNotEmpty() }?.let {
+                    Log.d(TAG, "Applying ${it.size} ICE server(s) from host handshake")
+                    webRtcManager.setIceServers(it)
+                }
+
                 connectionStateRepo.tryTransition(ConnectionState.AwaitingSetupComplete)
                 connectionStateRepo.tryTransition(ConnectionState.IceNegotiating)
 
