@@ -14,11 +14,18 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
+import com.reka.remoteplay.MainDispatcherRule
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class PhaseOneHandlerTest {
+
+    @get:Rule
+
+    val mainDispatcherRule = MainDispatcherRule()
+
 
     private lateinit var handler: PhaseOneHandler
     private val webSocketClient: WebSocketClient = mockk(relaxed = true)
@@ -78,7 +85,7 @@ class PhaseOneHandlerTest {
     @Test
     fun `hardware_info with supportsIceRestart true propagates to WebRtcManager`() = runTest(UnconfinedTestDispatcher()) {
         val displayMetrics: android.util.DisplayMetrics = mockk(relaxed = true)
-        handler.startListening(backgroundScope, displayMetrics)
+        handler.startListening(displayMetrics)
         runCurrent()
 
         val json = """{"type": "hardware_info", "supportsIceRestart": true}"""
@@ -91,7 +98,7 @@ class PhaseOneHandlerTest {
     @Test
     fun `hardware_info omitting supportsIceRestart defaults to false (client falls back to restart_phase2)`() = runTest(UnconfinedTestDispatcher()) {
         val displayMetrics: android.util.DisplayMetrics = mockk(relaxed = true)
-        handler.startListening(backgroundScope, displayMetrics)
+        handler.startListening(displayMetrics)
         runCurrent()
 
         // Older/unaware host omits the field entirely.

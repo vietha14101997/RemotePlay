@@ -16,8 +16,10 @@ import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import com.reka.remoteplay.MainDispatcherRule
 import org.junit.Before
 import org.junit.Ignore
+import org.junit.Rule
 import org.junit.Test
 
 // Fake repository defined within the test for isolation
@@ -47,6 +49,9 @@ class PhaseTwoFakeConnectionStateRepository : ConnectionStateRepository {
 @OptIn(ExperimentalCoroutinesApi::class)
 class PhaseTwoHandlerTest {
 
+    @get:Rule
+    val mainDispatcherRule = MainDispatcherRule()
+
     private lateinit var handler: PhaseTwoHandler
     private val webSocketClient: WebSocketClient = mockk(relaxed = true)
     private val connectionStateRepo = PhaseTwoFakeConnectionStateRepository()
@@ -59,6 +64,7 @@ class PhaseTwoHandlerTest {
     @Before
     fun setUp() {
         every { webSocketClient.textMessages } returns textMessages
+        every { webSocketClient.binaryMessages } returns MutableSharedFlow()
 
         handler = PhaseTwoHandler(
             webSocketClient,
@@ -78,7 +84,7 @@ class PhaseTwoHandlerTest {
     @Ignore("Failing test")
     @Test
     fun `handleMessage config_complete updates monitors and transitions state`() = runTest {
-        handler.startListening(backgroundScope)
+        handler.startListening()
         runCurrent()
         
         val json = """
@@ -103,7 +109,7 @@ class PhaseTwoHandlerTest {
     @Ignore("Failing test")
     @Test
     fun `handleMessage ice_ready updates iceReady state`() = runTest {
-        handler.startListening(backgroundScope)
+        handler.startListening()
         runCurrent()
         
         val json = """{"type": "ice_ready", "monitorCount": 1}"""
@@ -117,7 +123,7 @@ class PhaseTwoHandlerTest {
     @Ignore("Failing test")
     @Test
     fun `handleMessage error transitions to Error state`() = runTest {
-        handler.startListening(backgroundScope)
+        handler.startListening()
         runCurrent()
 
         val json = """{"type": "error", "message": "Failed", "code": "ERR01", "phase": 2}"""
@@ -135,7 +141,7 @@ class PhaseTwoHandlerTest {
         val slot = slot<(String) -> Unit>()
         every { webRtcManager.onIceRestartOffer = capture(slot) } just Runs
 
-        handler.startListening(backgroundScope)
+        handler.startListening()
         runCurrent()
 
         slot.captured.invoke("v=0 fake-offer-sdp")
@@ -148,7 +154,7 @@ class PhaseTwoHandlerTest {
         val slot = slot<() -> Unit>()
         every { webRtcManager.onRequestPhase2Restart = capture(slot) } just Runs
 
-        handler.startListening(backgroundScope)
+        handler.startListening()
         runCurrent()
 
         slot.captured.invoke()
@@ -163,7 +169,7 @@ class PhaseTwoHandlerTest {
     // pre-existing @Ignore'd "Failing test" cases above, which hit the same limitation).
     @Test
     fun `handleMessage ice_restart_answer applies the answer on WebRtcManager`() = runTest(UnconfinedTestDispatcher()) {
-        handler.startListening(backgroundScope)
+        handler.startListening()
         runCurrent()
 
         val json = """{"type": "ice_restart_answer", "sdp": "v=0 fake-answer-sdp"}"""
@@ -175,7 +181,7 @@ class PhaseTwoHandlerTest {
 
     @Test
     fun `handleMessage request_ice_restart triggers a HOST_REQUESTED ICE restart`() = runTest(UnconfinedTestDispatcher()) {
-        handler.startListening(backgroundScope)
+        handler.startListening()
         runCurrent()
 
         val json = """{"type": "request_ice_restart"}"""
