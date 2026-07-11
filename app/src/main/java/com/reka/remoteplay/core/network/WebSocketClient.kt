@@ -257,6 +257,11 @@ class WebSocketClient @Inject constructor() {
         return webSocket?.send(text) ?: false
     }
 
+    /** Send a binary WS frame — used by relay-media fallback (input back-channel over the room WS). */
+    fun sendBinary(data: ByteArray): Boolean {
+        return webSocket?.send(okio.ByteString.of(*data)) ?: false
+    }
+
     /**
      * User-initiated disconnect. Cancels any pending/in-flight reconnect attempt and never
      * re-triggers one — the resulting `onClosed` callback (code 1000) is recognized as
