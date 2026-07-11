@@ -158,11 +158,11 @@ class ConnectionViewModel @Inject constructor(
                         // Viewer: skip Phase 1+config, fast-track to Phase 2 ICE
                         connectionStateRepo.tryTransition(ConnectionState.AwaitingHardwareInfo)
                         connectionStateRepo.tryTransition(ConnectionState.AwaitingSuggestedConfig)
-                        phaseTwoHandler.startListening(viewModelScope)
+                        phaseTwoHandler.startListening()
                     } else {
                         // Host: full flow
                         val dm = getApplication<Application>().resources.displayMetrics
-                        phaseOneHandler.startListening(viewModelScope, dm)
+                        phaseOneHandler.startListening(dm)
                     }
 
                     val relayUrl = guestConnectionRepository.getRelayUrl()
@@ -275,10 +275,10 @@ class ConnectionViewModel @Inject constructor(
                     if (isViewer) {
                         connectionStateRepo.tryTransition(ConnectionState.AwaitingHardwareInfo)
                         connectionStateRepo.tryTransition(ConnectionState.AwaitingSuggestedConfig)
-                        phaseTwoHandler.startListening(viewModelScope)
+                        phaseTwoHandler.startListening()
                     } else {
                         val dm = getApplication<Application>().resources.displayMetrics
-                        phaseOneHandler.startListening(viewModelScope, dm)
+                        phaseOneHandler.startListening(dm)
                     }
 
                     val relayUrl = guestConnectionRepository.getRelayUrl()
@@ -333,7 +333,7 @@ class ConnectionViewModel @Inject constructor(
         // This ensures we don't miss the immediate 'hardware_info' message
         val dm = getApplication<Application>().resources.displayMetrics
         android.util.Log.i("ConnectionVM", "Starting PhaseOneHandler listening (Pre-connect)")
-        phaseOneHandler.startListening(viewModelScope, dm)
+        phaseOneHandler.startListening(dm)
 
         val tunnelUrl = config.tunnelUrl
         if (!tunnelUrl.isNullOrEmpty()) {
@@ -380,7 +380,7 @@ class ConnectionViewModel @Inject constructor(
         }
 
         val dm = getApplication<Application>().resources.displayMetrics
-        phaseOneHandler.startListening(viewModelScope, dm)
+        phaseOneHandler.startListening(dm)
 
         webSocketClient.connect(host, port, isUsb = false)
     }
@@ -478,7 +478,7 @@ class ConnectionViewModel @Inject constructor(
         phaseTwoHandler.setQualityPreset(qualityPreset.value)
 
         phaseOneHandler.sendProceed()
-        phaseTwoHandler.startListening(viewModelScope)
+        phaseTwoHandler.startListening()
     }
 
     fun getConnectionType(): String {

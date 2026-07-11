@@ -72,11 +72,16 @@ class PhaseTwoHandler @Inject constructor(
 
     private var messageJob: Job? = null
 
+    // Singleton-owned scope: same navigation-survival fix as PhaseOneHandler — the viewer
+    // path starts Phase 2 from the QR screen's ViewModel, whose scope dies when the screen
+    // pops. Job is cancelled explicitly in reset().
+    private val handlerScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
     companion object {
         private const val TAG = "PhaseTwoHandler"
     }
 
-    fun startListening(scope: CoroutineScope) {
+    fun startListening() {
         // Initialize WebRTC
         webRtcManager.initialize()
 
@@ -112,7 +117,7 @@ class PhaseTwoHandler @Inject constructor(
 
         // Listen for WebSocket messages
         messageJob?.cancel()
-        messageJob = scope.launch {
+        messageJob = handlerScope.launch {
             webSocketClient.textMessages.collect { text ->
                 handleMessage(text)
             }

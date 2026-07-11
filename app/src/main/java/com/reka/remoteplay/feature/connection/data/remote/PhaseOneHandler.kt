@@ -36,18 +36,23 @@ class PhaseOneHandler @Inject constructor(
 
     private var messageJob: Job? = null
     private var binaryJob: Job? = null
-    private var listeningScope: CoroutineScope? = null
+
+    // Singleton-owned scope: the handshake must survive navigation. Collection used to
+    // run on the caller's viewModelScope — the QR scanner screen's ViewModel is cleared
+    // when that screen pops, which killed the collection job mid-Phase-1 (messages then
+    // arrived with zero subscribers and the UI froze at "Getting recommendations").
+    // Jobs are cancelled explicitly in reset().
+    private val handlerScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     companion object {
         private const val TAG = "PhaseOneHandler"
     }
 
-    fun startListening(scope: CoroutineScope, displayMetrics: DisplayMetrics) {
+    fun startListening(displayMetrics: DisplayMetrics) {
         Log.i(TAG, "startListening called")
-        listeningScope = scope
-        
+
         messageJob?.cancel()
-        messageJob = scope.launch {
+        messageJob = handlerScope.launch {
             Log.d(TAG, "Message collection job started")
             webSocketClient.textMessages.collect { text ->
                 Log.v(TAG, "Collected text message: ${text.take(50)}...")
@@ -56,7 +61,7 @@ class PhaseOneHandler @Inject constructor(
         }
 
         binaryJob?.cancel()
-        binaryJob = scope.launch {
+        binaryJob = handlerScope.launch {
             webSocketClient.binaryMessages.collect { data ->
                 speedTestClient.handleBinaryData(data)
             }
@@ -137,7 +142,6 @@ class PhaseOneHandler @Inject constructor(
         binaryJob?.cancel()
         messageJob = null
         binaryJob = null
-        listeningScope = null
         _serverInfo.value = null
         _suggestedConfig.value = null
         speedTestClient.reset()

@@ -151,6 +151,13 @@ class WebSocketClient @Inject constructor() {
         webSocket?.close(1000, null)
         webSocket = null
 
+        // Drop replayed messages from the previous connection: with replay > 0, a new
+        // collector would otherwise re-process the old session's handshake (observed:
+        // client re-sent hardware_info_ack into a not-yet-open socket, and the host
+        // hung forever at "Waiting for hardware_info_ack").
+        _textMessages.resetReplayCache()
+        _binaryMessages.resetReplayCache()
+
         if (!isReconnect) {
             synchronized(reconnectLock) {
                 lastConnectUrl = url
