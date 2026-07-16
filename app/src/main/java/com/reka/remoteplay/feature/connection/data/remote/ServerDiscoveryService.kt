@@ -11,6 +11,7 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.NetworkInterface
 import java.net.SocketTimeoutException
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -70,26 +71,101 @@ class ServerDiscoveryService @Inject constructor(
         Log.d(TAG, "Discovery stopped")
     }
 
-    private suspend fun probeLoop() {
+    private suspend fun probeLoop() = coroutineScope {
         var socket: DatagramSocket? = null
         try {
-            socket = DatagramSocket().apply { broadcast = true }
+            // Bind to an ephemeral port to receive direct responses from servers
+            socket = DatagramSocket().apply {
+                broadcast = true
+                soTimeout = 2000 // Short timeout for response cycles
+            }
             val payload = """{"type":"discover","client":"RemotePlayClient"}""".toByteArray()
 
-            while (currentCoroutineContext().isActive) {
+            // Coroutine to handle responses on this specific socket
+            val responseJob = launch(Dispatchers.IO) {
+                val buffer = ByteArray(1024)
+                while (isActive) {
+                    try {
+                        val packet = DatagramPacket(buffer, buffer.size)
+                        socket.receive(packet)
+                        val json = String(packet.data, 0, packet.length)
+                        Log.d(TAG, "Received probe response from ${packet.address}: $json")
+                        parseBeacon(json)?.let { server ->
+                            updateServerList(server)
+                        }
+                    } catch (_: SocketTimeoutException) {
+                    } catch (e: Exception) {
+                        if (isActive) {
+                            Log.w(TAG, "Response listener error: ${e.message}")
+                        }
+                        break
+                    }
+                }
+            }
+
+            var iterations = 0
+            while (isActive) {
                 try {
-                    val packet = DatagramPacket(
-                        payload, payload.size,
-                        InetAddress.getByName("255.255.255.255"), DISCOVERY_PORT
-                    )
-                    socket.send(packet)
+                    val addresses = getBroadcastAddresses()
+                    for (address in addresses) {
+                        val packet = DatagramPacket(
+                            payload, payload.size,
+                            address, DISCOVERY_PORT
+                        )
+                        socket.send(packet)
+                        Log.d(TAG, "Probe sent to $address")
+                    }
                 } catch (e: Exception) {
                     Log.w(TAG, "Probe send failed: ${e.message}")
                 }
-                delay(PROBE_INTERVAL_MS)
+
+                // Aggressive probing for the first 5 seconds (every 1s), then slow down (every 3s)
+                val interval = if (iterations < 5) 1000L else PROBE_INTERVAL_MS
+                delay(interval)
+                iterations++
             }
+            responseJob.cancel()
         } finally {
             socket?.close()
+        }
+    }
+
+    private fun getBroadcastAddresses(): List<InetAddress> {
+        val addresses = mutableListOf<InetAddress>()
+        try {
+            val interfaces = NetworkInterface.getNetworkInterfaces()
+            while (interfaces.hasMoreElements()) {
+                val networkInterface = interfaces.nextElement()
+                if (networkInterface.isLoopback || !networkInterface.isUp) continue
+                for (interfaceAddress in networkInterface.interfaceAddresses) {
+                    val broadcast = interfaceAddress.broadcast
+                    if (broadcast != null) {
+                        addresses.add(broadcast)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to get broadcast addresses: ${e.message}")
+        }
+        if (addresses.isEmpty()) {
+            try {
+                addresses.add(InetAddress.getByName("255.255.255.255"))
+            } catch (_: Exception) {}
+        }
+        return addresses.distinct()
+    }
+
+    private fun updateServerList(server: DiscoveredServer) {
+        val now = System.currentTimeMillis()
+        _servers.update { list ->
+            val updated = list.toMutableList()
+            val idx = updated.indexOfFirst { it.ip == server.ip && it.port == server.port }
+            if (idx >= 0) {
+                updated[idx] = server.copy(lastSeen = now)
+            } else {
+                updated.add(server.copy(lastSeen = now))
+            }
+            updated
         }
     }
 
@@ -109,15 +185,9 @@ class ServerDiscoveryService @Inject constructor(
                     val packet = DatagramPacket(buffer, buffer.size)
                     socket.receive(packet)
                     val json = String(packet.data, 0, packet.length)
+                    Log.v(TAG, "Received beacon from ${packet.address}: $json")
                     parseBeacon(json)?.let { server ->
-                        val now = System.currentTimeMillis()
-                        _servers.update { list ->
-                            val updated = list.toMutableList()
-                            val idx = updated.indexOfFirst { it.ip == server.ip && it.port == server.port }
-                            if (idx >= 0) updated[idx] = server.copy(lastSeen = now)
-                            else updated.add(server.copy(lastSeen = now))
-                            updated
-                        }
+                        updateServerList(server)
                     }
                 } catch (_: SocketTimeoutException) {
                     // Expected — allows checking isActive
@@ -139,7 +209,7 @@ class ServerDiscoveryService @Inject constructor(
     }
 
     private val ipPattern = """"ip"\s*:\s*"([^"]*)"""".toRegex()
-    private val portPattern = """"port"\s*:\s*"([^"]*)"""".toRegex()
+    private val portPattern = """"port"\s*:\s*"?(\d+)"?""".toRegex()
     private val namePattern = """"name"\s*:\s*"([^"]*)"""".toRegex()
 
     private fun parseBeacon(json: String): DiscoveredServer? {

@@ -18,7 +18,7 @@ configure<ApplicationExtension> {
         applicationId = "com.reka.remoteplay"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
+        versionCode = 4
         versionName = "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
