@@ -25,12 +25,51 @@ data class RegisterResponse(@param:Json(name = "user_id") val userId: String, va
 @JsonClass(generateAdapter = true)
 data class RefreshRequest(@param:Json(name = "refresh_token") val refreshToken: String)
 
-/** P6 telemetry: reported fire-and-forget after ICE connects. No PII — only the
- *  selected candidate-pair type (host/srflx/prflx/relay) + IP family (ipv4/ipv6). */
+/**
+ * WAN P2P telemetry snapshot — contract v1, see
+ * `plans/260715-2315-wan-p2p-turn-quality-hardening/telemetry-snapshot-contract-v1.md`.
+ * Fire-and-forget, no-auth, no PII: `session_id` is an opaque per-connection grouping token
+ * (never a network address/SDP/credential). Identity fields (schema_version..sequence) are
+ * always present; selected-pair fields are present for `snapshot`/`path_transition` events;
+ * QoE fields are entirely optional and null when the underlying stat isn't available — e.g.
+ * this app's video path rides a DataChannel rather than an RTP receiver, so codec/resolution/
+ * fps/qp/frame_drops aren't exposed by libwebrtc getStats and are left null rather than
+ * fabricated.
+ */
 @JsonClass(generateAdapter = true)
 data class ConnectionTelemetryRequest(
-    @param:Json(name = "selected_pair_type") val selectedPairType: String,
-    @param:Json(name = "address_family") val addressFamily: String
+    @param:Json(name = "schema_version") val schemaVersion: Int = 1,
+    val source: String = "android",
+    /** snapshot | path_transition | ws_safe_mode_enter | ws_safe_mode_exit */
+    val event: String,
+    @param:Json(name = "session_id") val sessionId: String,
+    /** main | video */
+    @param:Json(name = "pc_role") val pcRole: String,
+    @param:Json(name = "monitor_index") val monitorIndex: Int,
+    val generation: Int,
+    val sequence: Int,
+    // --- selected candidate pair (present on snapshot/path_transition) ---
+    @param:Json(name = "local_candidate_type") val localCandidateType: String? = null,
+    @param:Json(name = "remote_candidate_type") val remoteCandidateType: String? = null,
+    @param:Json(name = "address_family") val addressFamily: String? = null,
+    val protocol: String? = null,
+    @param:Json(name = "relay_protocol") val relayProtocol: String? = null,
+    @param:Json(name = "path_class") val pathClass: String? = null,
+    // --- QoE metrics (nullable; omitted when unavailable) ---
+    @param:Json(name = "rtt_ms") val rttMs: Int? = null,
+    @param:Json(name = "jitter_ms") val jitterMs: Int? = null,
+    @param:Json(name = "loss_pct") val lossPct: Float? = null,
+    @param:Json(name = "send_bitrate_kbps") val sendBitrateKbps: Int? = null,
+    @param:Json(name = "available_bitrate_kbps") val availableBitrateKbps: Int? = null,
+    val codec: String? = null,
+    val width: Int? = null,
+    val height: Int? = null,
+    val fps: Int? = null,
+    val qp: Int? = null,
+    @param:Json(name = "frame_drops") val frameDrops: Int? = null,
+    @param:Json(name = "ttff_ms") val ttffMs: Int? = null,
+    @param:Json(name = "freeze_count") val freezeCount: Int? = null,
+    @param:Json(name = "freeze_ms_total") val freezeMsTotal: Int? = null
 )
 
 @JsonClass(generateAdapter = true)

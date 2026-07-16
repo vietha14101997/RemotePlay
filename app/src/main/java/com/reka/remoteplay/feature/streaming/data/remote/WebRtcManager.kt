@@ -1,6 +1,7 @@
 package com.reka.remoteplay.feature.streaming.data.remote
 
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
@@ -10,13 +11,13 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
-import com.reka.remoteplay.core.network.relay.ConnectionTelemetryRequest
 import com.reka.remoteplay.core.network.relay.IceServerConfig
 import com.reka.remoteplay.core.network.relay.RelayApi
 import org.webrtc.*
 import java.nio.ByteBuffer
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.math.roundToInt
 
 @Singleton
 class WebRtcManager @Inject constructor(
@@ -25,10 +26,12 @@ class WebRtcManager @Inject constructor(
 ) {
     private var factory: PeerConnectionFactory? = null
 
-    // Fire-and-forget scope for P6 connection telemetry (never blocks/affects streaming).
+    // Fire-and-forget scope for WAN P2P connection telemetry (never blocks/affects streaming).
     private val telemetryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    // L2: report telemetry once per session — ICE→CONNECTED can fire repeatedly on flaps.
-    @Volatile private var telemetryReported = false
+    // Phase 00: session/generation/sequence bookkeeping + snapshot/path_transition change
+    // detection, extracted so it's unit-testable without a live PeerConnection.
+    private val telemetryReporter = WebRtcConnectionTelemetryReporter(relayApi, telemetryScope)
+    @Volatile private var telemetryPollingStarted = false
 
     // P5: dedicated long-lived scope for ICE-restart scheduling (debounce/backoff/watchdog) and
     // the best-effort TURN-credential refresh before a restart. Kept separate from
@@ -140,6 +143,33 @@ class WebRtcManager @Inject constructor(
     private var iceServersFetchedAtMs = 0L
     private var iceServersTtlSec = 0
 
+    // ==================== Phase 00: debug-gated forced-relay path ====================
+
+    /** True only on a `android:debuggable` build (debug build type / debuggable-signed APK).
+     *  Release APKs are never debuggable, so this is always false there regardless of any
+     *  remote/unsigned input — the fail-closed guarantee lives in this check, not in caller
+     *  discipline. */
+    private val isDebugBuild: Boolean by lazy {
+        (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+    }
+
+    /**
+     * DEBUG-only forced-relay policy (telemetry contract v1 "Forced-path policy"): when true
+     * on a debuggable build, every new PeerConnection is created with
+     * `iceTransportsType = RELAY`, forcing media through TURN so the client-relay ->
+     * Host-srflx path can be reproduced on demand for testing. Setting this to true on a
+     * non-debuggable (release-signed) build is silently ignored — no remote/unsigned actor can
+     * flip forcing in a release build.
+     */
+    var forceRelayOnlyDebug: Boolean = false
+        set(value) {
+            if (value && !isDebugBuild) {
+                Log.w(TAG, "forceRelayOnlyDebug ignored: build is not debuggable")
+                return
+            }
+            field = value
+        }
+
     companion object {
         private const val TAG = "WebRtcManager"
 
@@ -157,6 +187,11 @@ class WebRtcManager @Inject constructor(
         /** How long the first gathering generation gets to produce a relay candidate
          *  (with TURN configured) before the early-restart kick fires. */
         private const val TURN_ALLOCATION_WATCH_MS = 3_000L
+
+        /** Phase 00: interval between periodic selected-path telemetry polls, catching
+         *  mid-session path changes that don't coincide with an ICE connection-state
+         *  transition (e.g. consent-freshness re-nomination while state stays CONNECTED). */
+        private const val TELEMETRY_POLL_INTERVAL_MS = 5_000L
     }
 
     fun initialize() {
@@ -172,6 +207,22 @@ class WebRtcManager @Inject constructor(
             .createPeerConnectionFactory()
 
         Log.d(TAG, "PeerConnectionFactory initialized")
+        startTelemetryPollingLoopOnce()
+    }
+
+    /** Phase 00: periodic selected-path poll for every live PC, started once for the lifetime
+     *  of this @Singleton instance. Guarded so re-entrant [initialize] calls (factory != null
+     *  early-return above) never spawn a second loop. */
+    private fun startTelemetryPollingLoopOnce() {
+        if (telemetryPollingStarted) return
+        telemetryPollingStarted = true
+        telemetryScope.launch {
+            while (isActive) {
+                delay(TELEMETRY_POLL_INTERVAL_MS)
+                if (mainPc != null) pollMainPathTelemetry()
+                videoPcs.keys.toList().forEach { monitorIndex -> pollVideoPathTelemetry(monitorIndex) }
+            }
+        }
     }
 
     /**
@@ -204,6 +255,12 @@ class WebRtcManager @Inject constructor(
             rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
+            // Phase 00 debug-gated forced-path baseline — see [forceRelayOnlyDebug].
+            iceTransportsType = if (forceRelayOnlyDebug && isDebugBuild) {
+                PeerConnection.IceTransportsType.RELAY
+            } else {
+                PeerConnection.IceTransportsType.ALL
+            }
             // Pre-gather 4 candidates so peer connection reuses already-known
             // srflx candidates on reconnect, reducing ICE gather time.
             iceCandidatePoolSize = 4
@@ -222,6 +279,10 @@ class WebRtcManager @Inject constructor(
         val f = factory ?: return
         val config = buildRtcConfig()
         resetGatherCounters()
+        // Phase 00: createMainPcOffer is the entry point for every genuinely new session
+        // (first connect AND a restart_phase2 recreate, both dispose+rebuild every PC below) —
+        // fresh opaque session_id, per-PC generation/sequence counters restart at 0.
+        telemetryReporter.startNewSession()
         // P5: if this is a restart_phase2 re-offer (not the very first connect), the previous
         // mainPc/videoPcs/DCs are still alive and about to be orphaned — dispose them first so
         // we don't leak PeerConnections or leave a dead PC's observer emitting stale candidates.
@@ -239,7 +300,7 @@ class WebRtcManager @Inject constructor(
                 Log.d(TAG, "Main PC ICE state: $state")
                 _iceConnectionState.value = state
                 if (state == PeerConnection.IceConnectionState.CONNECTED) {
-                    detectConnectionType()
+                    pollMainPathTelemetry()
                 }
                 handleIceConnectionStateForRestart(state)
             }
@@ -428,6 +489,10 @@ class WebRtcManager @Inject constructor(
         Log.i(TAG, "Performing ICE restart (trigger=$trigger, retry=${iceRestartPolicy.attempt})")
         maybeRefreshIceServersBeforeRestart(pc)
 
+        // Phase 00: same session_id, new ICE epoch — bump the main PC's telemetry generation
+        // so the next poll reports a fresh `snapshot` rather than a `path_transition`.
+        telemetryReporter.bumpGeneration(role = "main", monitorIndex = 0)
+
         pc.restartIce()
         pc.createOffer(object : SdpObserverAdapter() {
             override fun onCreateSuccess(sdp: SessionDescription) {
@@ -490,6 +555,9 @@ class WebRtcManager @Inject constructor(
 
             override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) {
                 Log.d(TAG, "Video PC[$monitorIndex] ICE state: $state")
+                if (state == PeerConnection.IceConnectionState.CONNECTED) {
+                    pollVideoPathTelemetry(monitorIndex)
+                }
             }
 
             override fun onDataChannel(dc: DataChannel) {
@@ -530,44 +598,71 @@ class WebRtcManager @Inject constructor(
 
     // ==================== Connection Type Detection ====================
 
-    private fun detectConnectionType() {
-        mainPc?.getStats { report ->
-            for (stats in report.statsMap.values) {
-                if (stats.type == "candidate-pair" && stats.members.containsKey("nominated")) {
-                    val nominated = stats.members["nominated"] as? Boolean ?: false
-                    if (!nominated) continue
+    /** Poll the main PC's nominated candidate pair and feed it to [telemetryReporter]. Also
+     *  keeps the pre-existing [connectionType] StateFlow (used by the diagnostics UI) in sync. */
+    private fun pollMainPathTelemetry() {
+        mainPc?.getStats { report -> handleStatsForTelemetry(report, role = "main", monitorIndex = 0) }
+    }
 
-                    val localCandidateId = stats.members["localCandidateId"] as? String ?: continue
-
-                    // Find the local candidate to check its type + IP family
-                    for (candStats in report.statsMap.values) {
-                        if (candStats.id == localCandidateId) {
-                            val candidateType = candStats.members["candidateType"] as? String ?: "unknown"
-                            _connectionType.value = candidateType
-                            val address = candStats.members["address"] as? String
-                                ?: candStats.members["ip"] as? String
-                            val family = addressFamilyOf(address)
-                            Log.i(TAG, "Connection type: $candidateType/$family (${if (candidateType == "relay") "TURN" else "P2P"})")
-                            reportConnectionTelemetry(candidateType, family)
-                            return@getStats
-                        }
-                    }
-                }
-            }
+    /** Poll one video PC's nominated candidate pair and feed it to [telemetryReporter]. */
+    private fun pollVideoPathTelemetry(monitorIndex: Int) {
+        videoPcs[monitorIndex]?.getStats { report ->
+            handleStatsForTelemetry(report, role = "video", monitorIndex = monitorIndex)
         }
     }
 
-    /** P6 telemetry: report the selected pair type + IP family to the relay,
-     *  fire-and-forget. Failures are swallowed — telemetry must never affect the
-     *  session. No PII is sent (type + family only, never the address). */
-    private fun reportConnectionTelemetry(pairType: String, family: String) {
-        if (telemetryReported) return
-        telemetryReported = true
-        telemetryScope.launch {
-            runCatching {
-                relayApi.reportConnectionTelemetry(ConnectionTelemetryRequest(pairType, family))
-            }.onFailure { Log.d(TAG, "telemetry report skipped: ${it.message}") }
+    /**
+     * Extracts the nominated candidate-pair fields libwebrtc's getStats actually exposes for
+     * this app's transport (DataChannel-carried video, not RTP) and hands them to
+     * [telemetryReporter] for classification/change-detection/sending. Never throws into the
+     * connection path — getStats callbacks run off the signaling thread and any failure here
+     * would otherwise be swallowed silently by libwebrtc anyway, but the extraction itself is
+     * defensive (`as?` everywhere) so a missing/renamed stats field degrades to null rather
+     * than crashing.
+     */
+    private fun handleStatsForTelemetry(report: RTCStatsReport, role: String, monitorIndex: Int) {
+        // Hard invariant: telemetry must NEVER affect the connection. This runs in a getStats
+        // callback on the WebRTC signaling thread, so wrap the whole extraction so a future
+        // non-null-safe access (or a renamed/typed stats field) degrades to a swallowed log
+        // instead of propagating across JNI and crashing the media thread. Symmetric with the
+        // Host reporter, which is already wrapped.
+        runCatching {
+        val pairStats = report.statsMap.values.firstOrNull {
+            it.type == "candidate-pair" && it.members["nominated"] as? Boolean == true
+        } ?: return@runCatching
+
+        val localCandidateId = pairStats.members["localCandidateId"] as? String
+        val remoteCandidateId = pairStats.members["remoteCandidateId"] as? String
+        val localCand = localCandidateId?.let { id -> report.statsMap.values.firstOrNull { it.id == id } }
+        val remoteCand = remoteCandidateId?.let { id -> report.statsMap.values.firstOrNull { it.id == id } }
+
+        val address = (localCand?.members?.get("address") ?: localCand?.members?.get("ip")) as? String
+        val pairRttMs = (pairStats.members["currentRoundTripTime"] as? Double)?.let { (it * 1000).roundToInt() }
+        // Fallback for the main PC: currentRoundTripTime is absent until STUN consent checks
+        // have run at least once; the DataChannel ping RTT is usually available sooner.
+        val rttMs = pairRttMs ?: (_p2pRttMs.value.takeIf { role == "main" && it > 0f }?.roundToInt())
+        val availableBitrateKbps = (pairStats.members["availableOutgoingBitrate"] as? Double)
+            ?.let { (it / 1000).roundToInt() }
+        val bytesSent = (pairStats.members["bytesSent"] as? Number)?.toLong()
+
+        val localType = telemetryReporter.recordSelectedPair(
+            role = role,
+            monitorIndex = monitorIndex,
+            rawLocalCandidateType = localCand?.members?.get("candidateType") as? String,
+            rawRemoteCandidateType = remoteCand?.members?.get("candidateType") as? String,
+            address = address,
+            rawProtocol = (pairStats.members["protocol"] ?: localCand?.members?.get("protocol")) as? String,
+            rawRelayProtocol = localCand?.members?.get("relayProtocol") as? String,
+            rttMs = rttMs,
+            availableBitrateKbps = availableBitrateKbps,
+            bytesSent = bytesSent
+        )
+
+        if (role == "main") {
+            _connectionType.value = localType
+            Log.i(TAG, "Connection type: $localType/${addressFamilyOf(address)} (${if (localType == "relay") "TURN" else "P2P"})")
         }
+        }.onFailure { Log.w(TAG, "Telemetry stats extraction failed (ignored, telemetry only): ${it.message}") }
     }
 
     /** true if connected via TURN relay (not P2P) */
@@ -700,7 +795,6 @@ class WebRtcManager @Inject constructor(
         _iceGatherDurationMs.value = 0L
         gatherStartMs = System.currentTimeMillis()
         gatherRunning = true
-        telemetryReported = false // new connection attempt → allow one fresh telemetry report
     }
 
     private fun countIceCandidateType(sdp: String) {
