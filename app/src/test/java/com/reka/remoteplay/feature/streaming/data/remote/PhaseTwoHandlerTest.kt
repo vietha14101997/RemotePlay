@@ -58,6 +58,7 @@ class PhaseTwoHandlerTest {
     private val webRtcManager: WebRtcManager = mockk(relaxed = true)
     private val cursorRenderer: CursorRenderer = mockk(relaxed = true)
     private val mdnsResolver: MdnsResolver = mockk(relaxed = true)
+    private val pairingHandshake: PairingHandshakeCoordinator = mockk(relaxed = true)
 
     private val textMessages = MutableSharedFlow<String>(replay = 1)
 
@@ -71,7 +72,8 @@ class PhaseTwoHandlerTest {
             connectionStateRepo,
             webRtcManager,
             cursorRenderer,
-            mdnsResolver
+            mdnsResolver,
+            pairingHandshake
         )
     }
 
@@ -189,5 +191,107 @@ class PhaseTwoHandlerTest {
         advanceUntilIdle()
 
         verify { webRtcManager.triggerIceRestart(IceRestartTrigger.HOST_REQUESTED) }
+    }
+
+    // ---------------- Pairing gate (pairing-protocol-contract-v1.md) ----------------
+
+    @Test
+    fun `sendStartStreaming is blocked while pairing handshake is unresolved`() {
+        every { pairingHandshake.isBlocking() } returns true
+
+        handler.sendStartStreaming()
+
+        verify(exactly = 0) { webSocketClient.sendText(match { it.contains("\"type\":\"start_streaming\"") }) }
+        assertTrue("Should NOT have transitioned to StartingStream", connectionStateRepo.transitions.none { it is ConnectionState.StartingStream })
+    }
+
+    @Test
+    fun `sendStartStreaming proceeds once pairing is resolved (or legacy, never offered)`() {
+        every { pairingHandshake.isBlocking() } returns false
+
+        handler.sendStartStreaming()
+
+        verify { webSocketClient.sendText(match { it.contains("\"type\":\"start_streaming\"") }) }
+        assertTrue(connectionStateRepo.transitions.any { it is ConnectionState.StartingStream })
+    }
+
+    @Test
+    fun `handleMessage pairing_host_proof delegates verification to the coordinator`() = runTest(UnconfinedTestDispatcher()) {
+        handler.startListening()
+        runCurrent()
+
+        val json = """{"type": "pairing_host_proof", "macH": "abc==", "sas": "1234"}"""
+        textMessages.emit(json)
+        advanceUntilIdle()
+
+        verify { pairingHandshake.handleHostProof(match { it.macH == "abc==" && it.sas == "1234" }, any()) }
+    }
+
+    @Test
+    fun `handleMessage pairing_failed delegates to the coordinator`() = runTest(UnconfinedTestDispatcher()) {
+        handler.startListening()
+        runCurrent()
+
+        val json = """{"type": "pairing_failed", "reason": "bad mac"}"""
+        textMessages.emit(json)
+        advanceUntilIdle()
+
+        verify { pairingHandshake.handleFailed("bad mac") }
+    }
+
+    @Test
+    fun `handleMessage pairing_required delegates to the coordinator`() = runTest(UnconfinedTestDispatcher()) {
+        handler.startListening()
+        runCurrent()
+
+        val json = """{"type": "pairing_required"}"""
+        textMessages.emit(json)
+        advanceUntilIdle()
+
+        verify { pairingHandshake.handleRequiredByHost() }
+    }
+
+    @Test
+    fun `handleMessage media_relay_start delegates readiness to the pairing gate instead of transitioning directly`() = runTest(UnconfinedTestDispatcher()) {
+        handler.startListening()
+        runCurrent()
+
+        val json = """{"type": "media_relay_start"}"""
+        textMessages.emit(json)
+        advanceUntilIdle()
+
+        verify { webRtcManager.relayMediaMode = true }
+        // Regression guard for the fail-closed hole: PhaseTwoHandler must NOT flip
+        // ReadyToStream itself here — that decision belongs to the (gated) coordinator.
+        verify { pairingHandshake.onIceReadySignal() }
+        assertTrue(connectionStateRepo.transitions.none { it is ConnectionState.ReadyToStream })
+    }
+
+    @Test
+    fun `onRelayMediaBinary drops frames while pairing is blocking (fail-closed)`() {
+        every { pairingHandshake.isBlocking() } returns true
+        // Capture the real sink lambda via the setter — reading the mocked property's getter
+        // back would return a MockK-generated stand-in, not the actual lambda the SUT installed.
+        val slot = slot<(ByteArray) -> Unit>()
+        every { webSocketClient.onRelayMediaBinary = capture(slot) } just Runs
+
+        handler.startListening()
+        slot.captured.invoke(byteArrayOf(0xF1.toByte(), 0, 1, 2, 3)) // CHANNEL_VIDEO envelope shape
+
+        verify(exactly = 0) { webRtcManager.feedRelayVideo(any()) }
+        verify(exactly = 0) { webRtcManager.feedRelayAudio(any()) }
+        verify(exactly = 0) { webRtcManager.feedRelayCursor(any()) }
+    }
+
+    @Test
+    fun `onRelayMediaBinary renders frames once pairing is resolved (or legacy, never offered)`() {
+        every { pairingHandshake.isBlocking() } returns false
+        val slot = slot<(ByteArray) -> Unit>()
+        every { webSocketClient.onRelayMediaBinary = capture(slot) } just Runs
+
+        handler.startListening()
+        slot.captured.invoke(byteArrayOf(0xF1.toByte(), 0, 1, 2, 3))
+
+        verify { webRtcManager.feedRelayVideo(any()) }
     }
 }

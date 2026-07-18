@@ -25,6 +25,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.tooling.preview.Preview
 import com.reka.remoteplay.R
 import com.reka.remoteplay.core.network.relay.RelayDevice
+import com.reka.remoteplay.feature.connection.data.local.PairedHost
 import com.reka.remoteplay.feature.connection.data.local.SavedServer
 import com.reka.remoteplay.feature.connection.data.remote.ServerDiscoveryService
 import com.reka.remoteplay.feature.connection.domain.model.ConnectionState
@@ -56,6 +57,8 @@ fun ConnectionScreen(
     onGuestPasswordChange: (String) -> Unit = {},
     onGuestConnect: () -> Unit = {},
     diagnostics: ConnectionDiagnostics? = null,
+    pairedHosts: List<PairedHost> = emptyList(),
+    onUnpairHost: (String) -> Unit = {},
 ) {
     val isBusy = connectionState.isConnected
 
@@ -400,6 +403,8 @@ fun ConnectionScreen(
                     )
                 }
             }
+
+            PairedDevicesSection(pairedHosts = pairedHosts, onUnpairHost = onUnpairHost)
         }
     }
 }

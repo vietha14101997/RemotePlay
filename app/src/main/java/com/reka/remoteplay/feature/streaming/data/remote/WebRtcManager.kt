@@ -22,7 +22,8 @@ import kotlin.math.roundToInt
 @Singleton
 class WebRtcManager @Inject constructor(
     @param:ApplicationContext private val context: Context,
-    private val relayApi: RelayApi
+    private val relayApi: RelayApi,
+    private val certificateProvider: PersistentRtcCertificateProvider
 ) {
     private var factory: PeerConnectionFactory? = null
 
@@ -251,6 +252,10 @@ class WebRtcManager @Inject constructor(
 
     private fun buildRtcConfig(): PeerConnection.RTCConfiguration {
         return PeerConnection.RTCConfiguration(iceServers).apply {
+            // Pairing identity anchor (pairing-protocol-contract-v1.md): pin the SAME persisted
+            // certificate on every PeerConnection (main + video) so this device's DTLS fingerprint
+            // is stable across sessions/restarts.
+            certificate = certificateProvider.getOrCreate()
             bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
             rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN

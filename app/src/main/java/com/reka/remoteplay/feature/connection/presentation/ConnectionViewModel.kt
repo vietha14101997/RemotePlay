@@ -20,7 +20,10 @@ import com.reka.remoteplay.core.network.relay.RelayDevice
 import com.reka.remoteplay.core.network.relay.TokenManager
 import com.reka.remoteplay.feature.auth.data.AuthRepository
 import com.reka.remoteplay.feature.connection.data.local.ConnectionPreferences
+import com.reka.remoteplay.feature.connection.data.local.PairedHost
+import com.reka.remoteplay.feature.connection.data.local.PairingStore
 import com.reka.remoteplay.feature.connection.data.local.SavedServer
+import com.reka.remoteplay.feature.connection.data.remote.PairingSessionManager
 import com.reka.remoteplay.feature.connection.data.remote.PhaseOneHandler
 import com.reka.remoteplay.feature.connection.data.remote.RelayDiscoveryService
 import com.reka.remoteplay.feature.connection.data.remote.ServerDiscoveryService
@@ -52,11 +55,22 @@ class ConnectionViewModel @Inject constructor(
     private val videoDecoderManager: VideoDecoderManager,
     private val audioPlayer: AudioPlayer,
     private val guestConnectionRepository: GuestConnectionRepository,
-    private val webRtcManager: com.reka.remoteplay.feature.streaming.data.remote.WebRtcManager
+    private val webRtcManager: com.reka.remoteplay.feature.streaming.data.remote.WebRtcManager,
+    private val pairingSessionManager: PairingSessionManager,
+    private val pairingStore: PairingStore
 ) : AndroidViewModel(application) {
 
     val connectionState = connectionStateRepo.state
     val savedServers = preferences.savedServers
+
+    // Paired devices (fingerprint allowlist) — surfaced so the user can unpair a host, per
+    // pairing-protocol-contract-v1.md's "Provide unpair/remove-device path" requirement.
+    val pairedHosts: StateFlow<List<PairedHost>> = pairingStore.pairedHosts
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    fun unpairHost(fingerprint: String) {
+        viewModelScope.launch { pairingStore.unpair(fingerprint) }
+    }
 
     // Server discovery (manual trigger)
     val discoveredServers = serverDiscoveryService.servers
@@ -327,8 +341,20 @@ class ConnectionViewModel @Inject constructor(
         // 1. Reset and prepare state first
         stopScan()
         phaseOneHandler.reset()
-        phaseTwoHandler.reset()
-        
+        phaseTwoHandler.reset() // clears any pending pairing secret — offer AFTER this line
+
+        // Pairing offer (pairing-protocol-contract-v1.md): only armed when the host actually
+        // minted one (QR carries prv=1/psk/nonce/sid/exp); absent -> legacy path untouched.
+        if (config.hasPairingOffer) {
+            android.util.Log.i("ConnectionVM", "QR carries a pairing offer (sid=${config.sid}) — will verify after DTLS connects")
+            pairingSessionManager.offerPairing(
+                psk = config.psk!!,
+                nonce = config.nonce!!,
+                sid = config.sid!!,
+                expMs = config.exp!!
+            )
+        }
+
         // 2. Start listening BEFORE initiating the physical connection
         // This ensures we don't miss the immediate 'hardware_info' message
         val dm = getApplication<Application>().resources.displayMetrics

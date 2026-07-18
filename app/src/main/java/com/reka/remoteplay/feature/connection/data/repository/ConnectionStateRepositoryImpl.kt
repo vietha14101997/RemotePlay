@@ -73,7 +73,11 @@ class ConnectionStateRepositoryImpl @Inject constructor() : ConnectionStateRepos
             is ConnectionState.ConfiguringSettings -> to is ConnectionState.SendingDisplayConfig
             is ConnectionState.SendingDisplayConfig -> to is ConnectionState.AwaitingSetupComplete
             is ConnectionState.AwaitingSetupComplete -> to is ConnectionState.IceNegotiating
-            is ConnectionState.IceNegotiating -> to is ConnectionState.ReadyToStream
+            // Legacy (no pairing offered) goes straight to ReadyToStream; when the host offered
+            // pairing (QR carried prv=1), the handshake routes through Pairing -> Verifying first.
+            is ConnectionState.IceNegotiating -> to is ConnectionState.ReadyToStream || to is ConnectionState.Pairing
+            is ConnectionState.Pairing -> to is ConnectionState.Verifying
+            is ConnectionState.Verifying -> to is ConnectionState.ReadyToStream
             is ConnectionState.ReadyToStream -> to is ConnectionState.StartingStream
             is ConnectionState.StartingStream -> to is ConnectionState.Streaming
             is ConnectionState.Streaming -> to is ConnectionState.Reconnecting
@@ -91,6 +95,8 @@ class ConnectionStateRepositoryImpl @Inject constructor() : ConnectionStateRepos
         is ConnectionState.SendingDisplayConfig -> 6
         is ConnectionState.AwaitingSetupComplete -> 7
         is ConnectionState.IceNegotiating -> 8
+        is ConnectionState.Pairing -> -1 // strict chain only (see isValidTransition), not a forward-permissive stage
+        is ConnectionState.Verifying -> -1
         is ConnectionState.ReadyToStream -> 9
         is ConnectionState.StartingStream -> 10
         is ConnectionState.Streaming -> 11

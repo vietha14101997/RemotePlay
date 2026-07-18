@@ -8,6 +8,7 @@ import com.reka.remoteplay.core.network.MessageParser
 import com.reka.remoteplay.core.network.RelayMediaProtocol
 import com.reka.remoteplay.core.network.WebSocketClient
 import com.reka.remoteplay.feature.connection.domain.model.ConnectionState
+import com.reka.remoteplay.feature.connection.domain.model.PairingPhase
 import com.reka.remoteplay.feature.connection.domain.repository.ConnectionStateRepository
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -20,7 +21,8 @@ class PhaseTwoHandler @Inject constructor(
     private val connectionStateRepo: ConnectionStateRepository,
     private val webRtcManager: WebRtcManager,
     private val cursorRenderer: CursorRenderer,
-    private val mdnsResolver: MdnsResolver
+    private val mdnsResolver: MdnsResolver,
+    private val pairingHandshake: PairingHandshakeCoordinator
 ) {
     private val _monitors = MutableStateFlow<List<MonitorInfoDto>>(emptyList())
     val monitors: StateFlow<List<MonitorInfoDto>> = _monitors.asStateFlow()
@@ -79,6 +81,13 @@ class PhaseTwoHandler @Inject constructor(
     // pops. Job is cancelled explicitly in reset().
     private val handlerScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
+    /** Exposes pairing progress for optional UI (state text / SAS display). */
+    val pairingPhase: StateFlow<PairingPhase> get() = pairingHandshake.phase
+
+    /** True while media/input must stay blocked on the pairing handshake
+     *  (pairing-protocol-contract-v1.md gate points). */
+    fun isPairingBlocking(): Boolean = pairingHandshake.isBlocking()
+
     companion object {
         private const val TAG = "PhaseTwoHandler"
     }
@@ -130,22 +139,34 @@ class PhaseTwoHandler @Inject constructor(
             }
         }
 
+        // Pairing handshake (pairing-protocol-contract-v1.md) — no-op (legacy path) unless a QR
+        // pairing offer was armed via ConnectionViewModel before this session started.
+        pairingHandshake.start(handlerScope) {
+            _iceReady.value = true
+            connectionStateRepo.tryTransition(ConnectionState.ReadyToStream)
+        }
+
         // Relay-media binary demux: video/audio/cursor arrive as tagged binary WS
         // frames when the host falls back from WebRTC. Wired as a DIRECT callback on
         // the OkHttp reader thread — ordered and lossless, same threading model as
         // the P2P DataChannel observer. The binaryMessages SharedFlow is deliberately
         // NOT used: its replay=8 + DROP_OLDEST semantics replay stale chunks and
         // silently drop 60KB video chunks under load, corrupting the H265 stream.
-        // No relayMediaMode gate either: the host only emits envelopes in relay mode,
-        // and gating on the flag would race the media_relay_start text message
-        // (handled on a separate coroutine) against the first video chunks.
+        // Fail-closed pairing gate (pairing-protocol-contract-v1.md): this is the actual
+        // media-rendering boundary for the relay-media fallback (there's no DTLS/SRTP here to
+        // gate on), so it must check isBlocking() itself on every frame rather than relying on
+        // relayMediaMode alone — relayMediaMode only reflects host intent, not pairing status.
         binaryJob?.cancel()
         binaryJob = null
         webSocketClient.onRelayMediaBinary = { bytes ->
-            when (RelayMediaProtocol.channelOf(bytes)) {
-                RelayMediaProtocol.CHANNEL_VIDEO -> webRtcManager.feedRelayVideo(RelayMediaProtocol.payload(bytes))
-                RelayMediaProtocol.CHANNEL_AUDIO -> webRtcManager.feedRelayAudio(RelayMediaProtocol.payload(bytes))
-                RelayMediaProtocol.CHANNEL_CURSOR -> webRtcManager.feedRelayCursor(RelayMediaProtocol.payload(bytes))
+            if (pairingHandshake.isBlocking()) {
+                Log.w(TAG, "Dropping relay-media frame — pairing not verified (fail-closed)")
+            } else {
+                when (RelayMediaProtocol.channelOf(bytes)) {
+                    RelayMediaProtocol.CHANNEL_VIDEO -> webRtcManager.feedRelayVideo(RelayMediaProtocol.payload(bytes))
+                    RelayMediaProtocol.CHANNEL_AUDIO -> webRtcManager.feedRelayAudio(RelayMediaProtocol.payload(bytes))
+                    RelayMediaProtocol.CHANNEL_CURSOR -> webRtcManager.feedRelayCursor(RelayMediaProtocol.payload(bytes))
+                }
             }
         }
     }
@@ -177,6 +198,10 @@ class PhaseTwoHandler @Inject constructor(
                 // Server's answer for our main PC offer
                 val msg = MessageParser.parse<AnswerMessage>(text) ?: return
                 Log.d(TAG, "Received main PC answer")
+                // Identity anchor (pairing-protocol-contract-v1.md): record the host's DTLS
+                // fingerprint from its answer SDP. Harmless no-op bookkeeping when no pairing
+                // was offered this session.
+                pairingHandshake.onAnswerSdp(msg.sdp, handlerScope)
                 webRtcManager.handleMainAnswer(msg.sdp)
             }
 
@@ -208,8 +233,7 @@ class PhaseTwoHandler @Inject constructor(
             "ice_ready" -> {
                 val msg = MessageParser.parse<IceReadyMessage>(text) ?: return
                 Log.d(TAG, "ICE ready: ${msg.monitorCount} monitors")
-                _iceReady.value = true
-                connectionStateRepo.tryTransition(ConnectionState.ReadyToStream)
+                pairingHandshake.onIceReadySignal()
             }
 
             "ice_restart_answer" -> {
@@ -220,13 +244,17 @@ class PhaseTwoHandler @Inject constructor(
             }
 
             "media_relay_start" -> {
-                // Host gave up on WebRTC (both peers behind CGNAT) and is now sending
-                // media over the room WebSocket. Enter relay mode + unblock streaming
-                // (relay has no ice_ready). Frames arrive via the binaryMessages demux.
+                // Host gave up on WebRTC (both peers behind CGNAT) and is now sending media
+                // over the room WebSocket instead (relay has no ice_ready). Treated as an
+                // alternate "host is ready" signal — routed through the SAME pairing gate as
+                // ice_ready (fail-closed): if a pairing offer is still unresolved, this only
+                // records readiness and does NOT flip ReadyToStream/enable rendering yet (see
+                // onRelayMediaBinary's per-frame gate above, which is what actually blocks
+                // rendering while unpaired). Legacy (no pairing offered) behaves exactly as
+                // before — isBlocking() is false, so the transition fires immediately.
                 Log.i(TAG, "Media relay mode ON — media over WebSocket (WebRTC unavailable)")
                 webRtcManager.relayMediaMode = true
-                _iceReady.value = true
-                connectionStateRepo.tryTransition(ConnectionState.ReadyToStream)
+                pairingHandshake.onIceReadySignal()
             }
 
             "media_relay_stop" -> {
@@ -259,6 +287,24 @@ class PhaseTwoHandler @Inject constructor(
                 )
             }
 
+            "pairing_host_proof" -> {
+                // Host's reply to our pairing_client_proof — verified inside the coordinator,
+                // fail-closed on any mismatch. See pairing-protocol-contract-v1.md.
+                val msg = MessageParser.parse<PairingHostProofMessage>(text) ?: return
+                pairingHandshake.handleHostProof(msg, handlerScope)
+            }
+
+            "pairing_failed" -> {
+                val msg = MessageParser.parse<PairingFailedMessage>(text) ?: return
+                pairingHandshake.handleFailed(msg.reason)
+            }
+
+            "pairing_required" -> {
+                // Reconnect path: host doesn't recognize us and we have no psk to answer with —
+                // this session cannot proceed; the user must re-scan a fresh QR pairing.
+                pairingHandshake.handleRequiredByHost()
+            }
+
             "error" -> {
                 val msg = MessageParser.parse<ErrorMessage>(text) ?: return
                 Log.e(TAG, "Server error: [${msg.code}] ${msg.message}")
@@ -271,6 +317,8 @@ class PhaseTwoHandler @Inject constructor(
 
     private fun createMainPcAndOffer() {
         webRtcManager.createMainPcOffer { offerSdp ->
+            // Identity anchor: record our own DTLS fingerprint from the offer we just created.
+            pairingHandshake.onLocalOfferSdp(offerSdp)
             val msg = OfferMessage(monitorIndex = 0, sdp = offerSdp)
             webSocketClient.sendText(MessageParser.serialize(msg))
             Log.d(TAG, "Sent main PC offer to server")
@@ -286,6 +334,12 @@ class PhaseTwoHandler @Inject constructor(
     }
 
     fun sendStartStreaming() {
+        // Fail-closed gate (pairing-protocol-contract-v1.md): defense-in-depth alongside the
+        // iceReady gate above — never send start_streaming while pairing is unresolved.
+        if (pairingHandshake.isBlocking()) {
+            Log.w(TAG, "sendStartStreaming blocked: pairing not verified (phase=${pairingHandshake.phase.value})")
+            return
+        }
         val msg = StartStreamingMessage()
         webSocketClient.sendText(MessageParser.serialize(msg))
         connectionStateRepo.tryTransition(ConnectionState.StartingStream)
@@ -303,6 +357,7 @@ class PhaseTwoHandler @Inject constructor(
         messageJob = null
         binaryJob?.cancel()
         binaryJob = null
+        pairingHandshake.reset()
         webSocketClient.onRelayMediaBinary = null // unhook direct media sink
         webRtcManager.relayMediaMode = false
         webRtcManager.dispose()

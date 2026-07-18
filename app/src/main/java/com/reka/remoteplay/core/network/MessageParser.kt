@@ -61,6 +61,10 @@ object MessageParser {
             "video_offer" -> parse<VideoOfferMessage>(rawJson)
             "audio_offer" -> parse<AudioOfferMessage>(rawJson)
             "reconnect_request" -> parse<ReconnectRequestMessage>(rawJson)
+            // Pairing (Phase 1 security)
+            "pairing_host_proof" -> parse<PairingHostProofMessage>(rawJson)
+            "pairing_failed" -> parse<PairingFailedMessage>(rawJson)
+            "pairing_required" -> parse<PairingRequiredMessage>(rawJson)
             // Phase 5: ICE restart on network change
             "ice_restart_answer" -> parse<IceRestartAnswerMessage>(rawJson)
             "request_ice_restart" -> parse<RequestIceRestartMessage>(rawJson)

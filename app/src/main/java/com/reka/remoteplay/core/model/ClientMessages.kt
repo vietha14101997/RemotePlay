@@ -68,6 +68,17 @@ data class RestartPhase2Message(
     @param:Json(name = "type") val type: String = "restart_phase2"
 )
 
+// ==================== Pairing (Phase 1 security): Client -> Server ====================
+
+/** Sent AFTER DTLS connects on the main PC, BEFORE media — see pairing-protocol-contract-v1.md.
+ *  `macC` = base64(HMAC-SHA256(psk, "RS-PAIR-v1|C|sid|nonce|hostFp|clientFp")). */
+@JsonClass(generateAdapter = true)
+data class PairingClientProofMessage(
+    @param:Json(name = "type") val type: String = "pairing_client_proof",
+    @param:Json(name = "sid") val sid: String = "",
+    @param:Json(name = "macC") val macC: String = ""
+)
+
 // ==================== Phase 3: Client -> Server ====================
 
 @JsonClass(generateAdapter = true)

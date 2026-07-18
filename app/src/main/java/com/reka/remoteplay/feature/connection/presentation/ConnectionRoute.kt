@@ -55,6 +55,7 @@ fun ConnectionRoute(
     val webRtcIceRelayCount by viewModel.webRtcIceRelayCount.collectAsState()
     val webRtcIcePrflxCount by viewModel.webRtcIcePrflxCount.collectAsState()
     val webRtcIceGatherDurationMs by viewModel.webRtcIceGatherDurationMs.collectAsState()
+    val pairedHosts by viewModel.pairedHosts.collectAsState()
 
     val diagnostics = ConnectionDiagnostics(
         connectionType = webRtcConnectionType,
@@ -88,6 +89,8 @@ fun ConnectionRoute(
         onGuestDeviceIdChange = viewModel::onGuestDeviceIdChange,
         onGuestPasswordChange = viewModel::onGuestPasswordChange,
         onGuestConnect = viewModel::connectAsGuest,
+        pairedHosts = pairedHosts,
+        onUnpairHost = viewModel::unpairHost,
     )
 }
 

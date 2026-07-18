@@ -129,6 +129,32 @@ data class RequestIceRestartMessage(
     @param:Json(name = "type") val type: String = "request_ice_restart"
 )
 
+// ==================== Pairing (Phase 1 security): Server -> Client ====================
+
+/** Host's reply to a valid `pairing_client_proof` — `macH` = base64(HMAC-SHA256(psk,
+ *  "RS-PAIR-v1|H|sid|nonce|hostFp|clientFp")). `sas` is a 4-digit string for optional user compare. */
+@JsonClass(generateAdapter = true)
+data class PairingHostProofMessage(
+    @param:Json(name = "type") val type: String = "pairing_host_proof",
+    @param:Json(name = "macH") val macH: String = "",
+    @param:Json(name = "sas") val sas: String = ""
+)
+
+/** Any handshake failure (bad MAC / expired / replayed sid|nonce / missing fingerprint). Host
+ *  closes the PeerConnection right after sending this — client must not retry silently. */
+@JsonClass(generateAdapter = true)
+data class PairingFailedMessage(
+    @param:Json(name = "type") val type: String = "pairing_failed",
+    @param:Json(name = "reason") val reason: String = ""
+)
+
+/** Reconnect path: host doesn't recognize our (unpinned) client fingerprint and has no psk to
+ *  verify us with — we must present a fresh QR pairing (this session cannot proceed). */
+@JsonClass(generateAdapter = true)
+data class PairingRequiredMessage(
+    @param:Json(name = "type") val type: String = "pairing_required"
+)
+
 // ==================== Phase 3: Server -> Client ====================
 
 @JsonClass(generateAdapter = true)
