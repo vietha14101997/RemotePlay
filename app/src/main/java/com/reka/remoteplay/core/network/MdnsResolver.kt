@@ -25,7 +25,10 @@ import javax.inject.Singleton
 @Singleton
 class MdnsResolver @Inject constructor() {
 
-    private val cache = ConcurrentHashMap<String, String?>()
+    // Maps mDNS hostname -> resolved IPv4, or "" when a recent attempt failed
+    // (negative cache). ConcurrentHashMap forbids null values, so a failed
+    // resolution is stored as an empty-string sentinel rather than null.
+    private val cache = ConcurrentHashMap<String, String>()
     private val cacheTimestamps = ConcurrentHashMap<String, Long>()
 
     /**
@@ -36,16 +39,18 @@ class MdnsResolver @Inject constructor() {
     fun resolveIfNeeded(candidate: String): String {
         if (candidate.isEmpty() || !candidate.contains(".local")) return candidate
 
+        val hostname = hostnameOf(candidate)
         val now = System.currentTimeMillis()
-        cacheTimestamps[hostnameOf(candidate)]?.let { ts ->
+        cacheTimestamps[hostname]?.let { ts ->
             if (now - ts < CACHE_TTL_MS) {
-                return cache[hostnameOf(candidate)] ?: candidate
+                val cached = cache[hostname]
+                // Empty sentinel = prior resolution failed; return original candidate.
+                return if (cached.isNullOrEmpty()) candidate else cached
             }
         }
 
         val resolved = tryResolve(candidate)
-        val hostname = hostnameOf(candidate)
-        cache[hostname] = resolved
+        cache[hostname] = resolved ?: ""   // "" marks a negative (failed) cache entry
         cacheTimestamps[hostname] = now
         return resolved ?: candidate
     }
