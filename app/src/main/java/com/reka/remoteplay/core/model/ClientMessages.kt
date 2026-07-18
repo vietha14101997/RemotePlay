@@ -9,7 +9,12 @@ import com.squareup.moshi.JsonClass
 data class HardwareInfoAckMessage(
     @param:Json(name = "type") val type: String = "hardware_info_ack",
     @param:Json(name = "clientCodecs") val clientCodecs: ClientCodecCapability? = null,
-    @param:Json(name = "perTrackPc") val perTrackPc: Boolean = true
+    @param:Json(name = "perTrackPc") val perTrackPc: Boolean = true,
+    // Android keeps its intentional single-active-monitor policy: only the active decoder
+    // receives frames and the remaining monitors are paused via pause_monitor messages.
+    // Explicit false here so the Host negotiates the active-monitor-only branch even when
+    // its default would flip on missing fields.
+    @param:Json(name = "streamAllMonitors") val streamAllMonitors: Boolean = false
 )
 
 @JsonClass(generateAdapter = true)

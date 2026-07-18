@@ -101,7 +101,11 @@ class PhaseOneHandler @Inject constructor(
                     if (!perTrack) Log.i(TAG, "Relay transport: requesting single-PC mode (perTrackPc=false)")
                     val ack = HardwareInfoAckMessage(
                         clientCodecs = codecs,
-                        perTrackPc = perTrack
+                        perTrackPc = perTrack,
+                        // Android keeps its intentional single-active-monitor policy;
+                        // explicit false makes the active-monitor-only branch obvious in
+                        // Host handshake logs even on a Host that defaults the field.
+                        streamAllMonitors = false
                     )
                     val ackJson = MessageParser.serialize(ack)
                     Log.d(TAG, "Sending hardware_info_ack: $ackJson")
