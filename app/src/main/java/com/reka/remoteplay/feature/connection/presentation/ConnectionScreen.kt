@@ -13,7 +13,10 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.res.stringResource
@@ -23,7 +26,9 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.tooling.preview.Preview
+import android.widget.Toast
 import com.reka.remoteplay.R
+import com.reka.remoteplay.core.debug.DebugFlags
 import com.reka.remoteplay.core.network.relay.RelayDevice
 import com.reka.remoteplay.feature.connection.data.local.PairedHost
 import com.reka.remoteplay.feature.connection.data.local.SavedServer
@@ -61,6 +66,7 @@ fun ConnectionScreen(
     onUnpairHost: (String) -> Unit = {},
 ) {
     val isBusy = connectionState.isConnected
+    val context = LocalContext.current
 
     Box(
         modifier = Modifier
@@ -107,7 +113,20 @@ fun ConnectionScreen(
                 text = stringResource(R.string.app_name),
                 fontSize = 28.sp,
                 fontWeight = FontWeight.Bold,
-                color = AppTextPrimary
+                color = AppTextPrimary,
+                // Hidden dev affordance (debug builds only): long-press the title to toggle the
+                // P0 forced-relay baseline. Field testers use this to force TURN without a rebuild.
+                // No-op on release builds (DebugFlags.toggleForceRelayOnly returns false).
+                modifier = Modifier.pointerInput(Unit) {
+                    detectTapGestures(onLongPress = {
+                        val on = DebugFlags.toggleForceRelayOnly(context)
+                        Toast.makeText(
+                            context,
+                            if (on) "Forced-relay ON (P0 TURN test)" else "Forced-relay OFF",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    })
+                }
             )
             Text(
                 text = stringResource(R.string.connect_to_pc),

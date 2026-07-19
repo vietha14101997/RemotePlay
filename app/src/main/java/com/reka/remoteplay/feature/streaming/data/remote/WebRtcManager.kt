@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import com.reka.remoteplay.core.debug.DebugFlags
 import com.reka.remoteplay.core.network.relay.IceServerConfig
 import com.reka.remoteplay.core.network.relay.RelayApi
 import org.webrtc.*
@@ -261,7 +262,12 @@ class WebRtcManager @Inject constructor(
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
             // Phase 00 debug-gated forced-path baseline — see [forceRelayOnlyDebug].
-            iceTransportsType = if (forceRelayOnlyDebug && isDebugBuild) {
+            // Also honors the persisted DebugFlags toggle (hidden long-press on the
+            // Connection-screen title) so field testers can force TURN without a rebuild.
+            // Both inputs are debug-gated (field setter guard + DebugFlags.isDebuggable).
+            val relayForced = forceRelayOnlyDebug || DebugFlags.forceRelayOnly(context)
+            if (relayForced) Log.w(TAG, "[ForcedRelay] iceTransportsType=RELAY (P0 forced-path baseline active)")
+            iceTransportsType = if (relayForced) {
                 PeerConnection.IceTransportsType.RELAY
             } else {
                 PeerConnection.IceTransportsType.ALL
