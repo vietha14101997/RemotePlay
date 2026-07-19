@@ -114,4 +114,28 @@ class PhaseOneHandlerTest {
         handler.reset()
         verify { webRtcManager.setSupportsIceRestart(false) }
     }
+
+    // ---------------- streamAllMonitors capability ----------------
+
+    // Android keeps its intentional single-active-monitor policy; the ack MUST advertise
+    // streamAllMonitors=false so the Host negotiates the active-monitor-only branch and
+    // continues to auto-pause inactive monitors. This test pins the wire shape so any
+    // accidental flip on the Android side is caught immediately.
+    @Test
+    fun `hardware_info_ack advertises streamAllMonitors false (Android single-active policy)`() = runTest(UnconfinedTestDispatcher()) {
+        val displayMetrics: android.util.DisplayMetrics = mockk(relaxed = true)
+        handler.startListening(displayMetrics)
+        runCurrent()
+
+        val json = """{"type": "hardware_info"}"""
+        textMessages.emit(json)
+        advanceUntilIdle()
+
+        verify {
+            webSocketClient.sendText(match {
+                it.contains("\"type\":\"hardware_info_ack\"") &&
+                    it.contains("\"streamAllMonitors\":false")
+            })
+        }
+    }
 }
