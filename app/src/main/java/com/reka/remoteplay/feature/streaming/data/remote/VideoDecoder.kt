@@ -8,6 +8,14 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
 import android.view.Surface
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.locks.ReentrantLock
@@ -30,12 +38,24 @@ class VideoDecoder(
     private var surface: Surface? = null
     private var codecConfigData: ByteArray? = null
     @Volatile private var decoderBootstrapped = false
+    @Volatile private var codecGeneration = 0
+    @Volatile private var lifecycleGeneration = 0
+    @Volatile private var released = false
     private var firstFrameRendered = false
     private val lock = ReentrantLock()
 
-    private val availableInputBuffers = ConcurrentLinkedQueue<Int>()
+    private data class InputBufferSlot(
+        val generation: Int,
+        val codec: MediaCodec,
+        val index: Int
+    )
+
+    private val availableInputBuffers = ConcurrentLinkedQueue<InputBufferSlot>()
     private var callbackThread: HandlerThread? = null
     private var callbackHandler: Handler? = null
+    private val recoveryScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val recoveryLock = Any()
+    @Volatile private var recoveryJob: Job? = null
 
     /** Frames skipped (released without rendering) due to queue congestion. */
     @Volatile var framesSkipped = 0L
@@ -65,7 +85,7 @@ class VideoDecoder(
     private val frameIntervalNs = 1_000_000_000L / targetFps
 
     var onFirstFrame: (() -> Unit)? = null
-    var onDecoderReady: (() -> Unit)? = null
+    @Volatile var onKeyframeRequired: (() -> Boolean)? = null
     /**
      * C3: Fired on the callbackHandler thread when the decoder signals an output format change.
      * This happens when the server changes the encoded resolution mid-stream (e.g. quality preset
@@ -75,6 +95,7 @@ class VideoDecoder(
 
     companion object {
         private const val TAG = "VideoDecoder"
+        private const val KEYFRAME_RETRY_MS = 500L
 
         /**
          * Split H264 codec config (Annex-B) into SPS and PPS.
@@ -104,6 +125,7 @@ class VideoDecoder(
     }
 
     fun setSurface(newSurface: Surface) = lock.withLock {
+        if (released) return@withLock
         surface = newSurface
         Log.d(TAG, "[$monitorIndex] setSurface: valid=${newSurface.isValid}, hasConfig=${codecConfigData != null}, configured=$configured")
         if (codecConfigData != null && !configured) {
@@ -112,12 +134,24 @@ class VideoDecoder(
     }
 
     fun feedParsedFrame(frame: VideoFrameParser.ParsedFrame) {
-        if (frame.data.isEmpty()) return
+        if (frame.data.isEmpty() || released) return
 
         // Fast path for P-frames: skip lock when possible (most common case)
         if (frame.type == VideoFrameParser.FrameType.PFRAME) {
-            if (!configured || !decoderBootstrapped) return
-            submitFrame(frame.data, isKeyFrame = false)
+            if (!configured) {
+                requestRecoveryKeyframe()
+                return
+            }
+            if (!decoderBootstrapped) {
+                requestRecoveryKeyframe()
+                return
+            }
+            if (!submitFrame(frame.data, isKeyFrame = false)) {
+                // A dropped P-frame invalidates every dependent frame. Stop feeding the broken
+                // chain and ask the Host for a new IDR rather than rendering macroblock garbage.
+                decoderBootstrapped = false
+                requestRecoveryKeyframe()
+            }
             return
         }
 
@@ -130,14 +164,7 @@ class VideoDecoder(
                     if (isParamsChanged) {
                         // Resolution or codec params changed — release and reconfigure
                         Log.i(TAG, "[$monitorIndex] Codec config changed, reconfiguring decoder")
-                        try { mediaCodec?.stop(); mediaCodec?.release() } catch (_: Exception) {}
-                        mediaCodec = null
-                        configured = false
-                        decoderBootstrapped = false
-                        availableInputBuffers.clear()
-                        callbackThread?.quitSafely()
-                        callbackThread = null
-                        callbackHandler = null
+                        releaseCodecLocked()
                     }
                     if (surface != null && !configured) {
                         configureCodec()
@@ -153,8 +180,19 @@ class VideoDecoder(
                     } else {
                         frame.data
                     }
-                    submitFrame(feedData, isKeyFrame = true)
-                    decoderBootstrapped = true
+                    // Do not accept dependent P-frames until the IDR was actually queued.
+                    // MediaCodec can briefly have no input buffer during startup/reconfigure;
+                    // marking bootstrap complete after that drop poisons the decoder reference
+                    // chain until another keyframe happens to arrive.
+                    decoderBootstrapped = submitFrame(feedData, isKeyFrame = true)
+                    if (decoderBootstrapped) {
+                        synchronized(recoveryLock) {
+                            recoveryJob?.cancel()
+                            recoveryJob = null
+                        }
+                    } else {
+                        requestRecoveryKeyframe()
+                    }
                 }
                 else -> {}
             }
@@ -162,10 +200,12 @@ class VideoDecoder(
     }
 
     private fun configureCodec() {
+        if (released) return
         val s = surface ?: return
         val csd = codecConfigData ?: return
 
         try {
+            val generation = ++codecGeneration
             callbackThread = HandlerThread("Decoder-$monitorIndex").apply {
                 priority = Thread.MAX_PRIORITY
                 start()
@@ -217,10 +257,12 @@ class VideoDecoder(
 
             mc.setCallback(object : MediaCodec.Callback() {
                 override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {
-                    availableInputBuffers.offer(index)
+                    if (generation != codecGeneration) return
+                    availableInputBuffers.offer(InputBufferSlot(generation, codec, index))
                 }
 
                 override fun onOutputBufferAvailable(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
+                    if (generation != codecGeneration) return
                     if (info.size <= 0) {
                         try { codec.releaseOutputBuffer(index, false) } catch (_: Exception) {}
                         return
@@ -246,13 +288,16 @@ class VideoDecoder(
                 }
 
                 override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) {
+                    if (generation != codecGeneration) return
                     Log.e(TAG, "[$monitorIndex] Codec error: ${e.message}")
                     if (e.isRecoverable) {
                         lock.withLock { flush() }
+                        requestRecoveryKeyframe()
                     }
                 }
 
                 override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {
+                    if (generation != codecGeneration) return
                     val newW = try { format.getInteger(MediaFormat.KEY_WIDTH) } catch (_: Exception) { -1 }
                     val newH = try { format.getInteger(MediaFormat.KEY_HEIGHT) } catch (_: Exception) { -1 }
                     Log.i(TAG, "[$monitorIndex] Output format changed: ${newW}x${newH}")
@@ -270,58 +315,112 @@ class VideoDecoder(
             mediaCodec = mc
             configured = true
             Log.i(TAG, "[$monitorIndex] Decoder configured (async): $codecName")
-            onDecoderReady?.invoke()
+            requestRecoveryKeyframe()
         } catch (e: Exception) {
             Log.e(TAG, "[$monitorIndex] Configure failed: ${e.message}", e)
         }
     }
 
-    private fun submitFrame(data: ByteArray, isKeyFrame: Boolean) {
-        val mc = mediaCodec ?: return
-        var inputIndex = availableInputBuffers.poll()
-        if (inputIndex == null && isKeyFrame) {
+    private fun submitFrame(data: ByteArray, isKeyFrame: Boolean): Boolean {
+        val mc = mediaCodec ?: return false
+        val generation = codecGeneration
+        var slot = pollInputBuffer(generation, mc)
+        if (slot == null && isKeyFrame) {
             val deadline = System.nanoTime() + 5_000_000L
             while (System.nanoTime() < deadline) {
-                inputIndex = availableInputBuffers.poll()
-                if (inputIndex != null) break
+                slot = pollInputBuffer(generation, mc)
+                if (slot != null) break
                 Thread.yield()
             }
         }
-        if (inputIndex == null) {
+        if (slot == null) {
             framesDroppedNoBuffer++
             if (framesDroppedNoBuffer % 30 == 1L) {
                 Log.w(TAG, "[$monitorIndex] No input buffer (dropped=$framesDroppedNoBuffer, keyframe=$isKeyFrame)")
             }
-            return
+            return false
         }
 
         try {
-            val inputBuffer = mc.getInputBuffer(inputIndex) ?: return
-            inputBuffer.clear()
+            synchronized(mc) {
+                if (generation != codecGeneration || mediaCodec !== mc) return false
+                val inputBuffer = mc.getInputBuffer(slot.index)
+                if (inputBuffer == null) {
+                    Log.w(TAG, "[$monitorIndex] Input buffer ${slot.index} unavailable")
+                    return false
+                }
+                inputBuffer.clear()
 
-            val hasStartCode = data.size >= 4 &&
-                data[0] == 0x00.toByte() && data[1] == 0x00.toByte() &&
-                data[2] == 0x00.toByte() && data[3] == 0x01.toByte()
+                val hasStartCode = data.size >= 4 &&
+                    data[0] == 0x00.toByte() && data[1] == 0x00.toByte() &&
+                    data[2] == 0x00.toByte() && data[3] == 0x01.toByte()
 
-            val totalSize: Int
-            if (hasStartCode) {
-                inputBuffer.put(data)
-                totalSize = data.size
-            } else {
-                inputBuffer.put(byteArrayOf(0x00, 0x00, 0x00, 0x01))
-                inputBuffer.put(data)
-                totalSize = 4 + data.size
+                val totalSize = data.size + if (hasStartCode) 0 else 4
+                if (totalSize > inputBuffer.remaining()) {
+                    Log.e(TAG, "[$monitorIndex] Input frame too large: $totalSize > ${inputBuffer.remaining()}")
+                    // Return the codec-owned slot rather than losing it until the next restart.
+                    mc.queueInputBuffer(slot.index, 0, 0, System.nanoTime() / 1000, 0)
+                    return false
+                }
+
+                if (hasStartCode) {
+                    inputBuffer.put(data)
+                } else {
+                    inputBuffer.put(byteArrayOf(0x00, 0x00, 0x00, 0x01))
+                    inputBuffer.put(data)
+                }
+
+                if (generation != codecGeneration || mediaCodec !== mc) return false
+                val flags = if (isKeyFrame) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
+                mc.queueInputBuffer(slot.index, 0, totalSize, System.nanoTime() / 1000, flags)
+                framesSubmitted++
+                return true
             }
-
-            val flags = if (isKeyFrame) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
-            mc.queueInputBuffer(inputIndex, 0, totalSize, System.nanoTime() / 1000, flags)
-            framesSubmitted++
         } catch (e: Exception) {
             Log.e(TAG, "[$monitorIndex] Submit error: ${e.message}")
+            if (isKeyFrame) decoderBootstrapped = false
+            return false
         }
     }
 
-    fun flush() {
+    private fun pollInputBuffer(generation: Int, codec: MediaCodec): InputBufferSlot? {
+        while (true) {
+            val slot = availableInputBuffers.poll() ?: return null
+            if (slot.generation == generation && slot.codec === codec) return slot
+            if (slot.generation > generation) {
+                // A retiring codec raced a callback from its replacement. Put the newer slot
+                // back untouched so only its owning codec generation can consume it.
+                availableInputBuffers.offer(slot)
+                return null
+            }
+        }
+    }
+
+    private fun requestRecoveryKeyframe() {
+        val generation = lifecycleGeneration
+        if (released) return
+        synchronized(recoveryLock) {
+            if (released || generation != lifecycleGeneration) return
+            if (recoveryJob?.isActive == true) return
+            recoveryJob = recoveryScope.launch {
+                while (isActive && !released && generation == lifecycleGeneration && !decoderBootstrapped) {
+                    Log.w(TAG, "[$monitorIndex] Decoder reference chain lost; requesting recovery IDR")
+                    val keyframeRequest = synchronized(recoveryLock) {
+                        if (released || generation != lifecycleGeneration) return@synchronized null
+                        onKeyframeRequired
+                    } ?: break
+                    // This callback can call WebSocketClient.sendText(). Keep it outside the
+                    // recovery state lock to avoid recoveryLock <-> reconnectLock inversion.
+                    val sent = keyframeRequest.invoke()
+                    if (!sent) Log.w(TAG, "[$monitorIndex] Recovery IDR request not sent; will retry")
+                    delay(KEYFRAME_RETRY_MS)
+                }
+            }
+        }
+    }
+
+    fun flush() = lock.withLock {
+        if (released) return@withLock
         try {
             availableInputBuffers.clear()
             mediaCodec?.flush()
@@ -337,19 +436,43 @@ class VideoDecoder(
     }
 
     fun release() = lock.withLock {
-        try {
-            mediaCodec?.stop()
-            mediaCodec?.release()
-        } catch (_: Exception) {}
-        mediaCodec = null
-        configured = false
-        decoderBootstrapped = false
+        if (released) return@withLock
+        released = true
+        lifecycleGeneration++
+        synchronized(recoveryLock) {
+            recoveryJob?.cancel()
+            recoveryJob = null
+            onKeyframeRequired = null
+        }
+        recoveryScope.cancel()
+        releaseCodecLocked()
         firstFrameRendered = false
         lastRenderNs = 0
         codecConfigData = null
+        surface = null
+    }
+
+    /** Caller holds [lock]. Invalidate lock-free submitters before touching the old codec. */
+    private fun releaseCodecLocked() {
+        codecGeneration++
+        val retiringCodec = mediaCodec
+        mediaCodec = null
+        configured = false
+        decoderBootstrapped = false
         availableInputBuffers.clear()
-        callbackThread?.quitSafely()
+
+        val retiringThread = callbackThread
         callbackThread = null
         callbackHandler = null
+        if (retiringCodec != null) {
+            synchronized(retiringCodec) {
+                try {
+                    retiringCodec.stop()
+                    retiringCodec.release()
+                } catch (_: Exception) {}
+            }
+        }
+        retiringThread?.quitSafely()
     }
+
 }

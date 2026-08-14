@@ -36,6 +36,7 @@ import com.reka.remoteplay.feature.streaming.data.remote.PhaseTwoHandler
 import com.reka.remoteplay.feature.streaming.data.remote.VideoDecoderManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlin.math.roundToInt
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -141,6 +142,10 @@ class ConnectionViewModel @Inject constructor(
     private val _isViewerMode = MutableStateFlow(false)
     val isViewerMode: StateFlow<Boolean> = _isViewerMode.asStateFlow()
 
+    private val connectionAttemptLock = Any()
+    private var connectionAttemptGeneration = 0L
+    private var connectionAttemptJob: Job? = null
+
     fun onGuestDeviceIdChange(id: String) { _guestDeviceId.value = id; _guestError.value = null }
     fun onGuestPasswordChange(pw: String) { _guestPassword.value = pw; _guestError.value = null }
 
@@ -149,45 +154,84 @@ class ConnectionViewModel @Inject constructor(
         val pw = _guestPassword.value.trim()
         if (id.isBlank() || pw.isBlank()) return
 
-        viewModelScope.launch {
-            _guestConnecting.value = true
-            _guestError.value = null
+        launchConnectionAttempt(showGuestProgress = true) { generation ->
+            connectToRoom(generation, id, pw)
+        }
+    }
 
-            // Fetch TURN servers before joining room (needed for cross-NAT)
-            val iceServers = guestConnectionRepository.fetchIceServers()
-            if (iceServers.isNotEmpty()) {
-                webRtcManager.setIceServers(iceServers)
-            }
+    private suspend fun connectToRoom(generation: Long, roomId: String, password: String) {
+        _guestError.value = null
 
-            guestConnectionRepository.joinRoom(id, pw).fold(
-                onSuccess = { roomInfo ->
-                    val isViewer = roomInfo.role == "viewer"
-                    _isViewerMode.value = isViewer
+        // Fetch TURN servers before joining room (needed for cross-NAT)
+        val iceServers = guestConnectionRepository.fetchIceServers()
+        if (!isCurrentConnectionAttempt(generation)) return
+        if (iceServers.isNotEmpty()) {
+            webRtcManager.setIceServers(iceServers)
+        }
 
-                    phaseOneHandler.reset()
-                    phaseTwoHandler.reset()
-                    connectionStateRepo.tryTransition(ConnectionState.Connecting)
+        guestConnectionRepository.joinRoom(roomId, password).fold(
+            onSuccess = { roomInfo ->
+                if (!isCurrentConnectionAttempt(generation)) return@fold
+                val isViewer = roomInfo.role == "viewer"
+                _isViewerMode.value = isViewer
 
-                    if (isViewer) {
-                        // Viewer: skip Phase 1+config, fast-track to Phase 2 ICE
-                        connectionStateRepo.tryTransition(ConnectionState.AwaitingHardwareInfo)
-                        connectionStateRepo.tryTransition(ConnectionState.AwaitingSuggestedConfig)
-                        phaseTwoHandler.startListening()
-                    } else {
-                        // Host: full flow
-                        val dm = getApplication<Application>().resources.displayMetrics
-                        phaseOneHandler.startListening(dm)
-                    }
+                phaseOneHandler.reset()
+                phaseTwoHandler.reset()
+                connectionStateRepo.tryTransition(ConnectionState.Connecting)
 
-                    val relayUrl = guestConnectionRepository.getRelayUrl()
-                    webSocketClient.connectRoom(relayUrl, roomInfo.roomId, roomInfo.clientId)
-                    _guestConnecting.value = false
-                },
-                onFailure = { e ->
-                    _guestError.value = e.message
-                    _guestConnecting.value = false
+                if (isViewer) {
+                    // Viewer: skip Phase 1+config, fast-track to Phase 2 ICE
+                    connectionStateRepo.tryTransition(ConnectionState.AwaitingHardwareInfo)
+                    connectionStateRepo.tryTransition(ConnectionState.AwaitingSuggestedConfig)
+                    phaseTwoHandler.startListening()
+                } else {
+                    // Host: full flow
+                    val dm = getApplication<Application>().resources.displayMetrics
+                    phaseOneHandler.startListening(dm)
                 }
-            )
+
+                if (!isCurrentConnectionAttempt(generation)) return@fold
+                val relayUrl = guestConnectionRepository.getRelayUrl()
+                webSocketClient.connectRoom(relayUrl, roomInfo.roomId, roomInfo.clientId)
+            },
+            onFailure = { e ->
+                if (isCurrentConnectionAttempt(generation)) _guestError.value = e.message
+            }
+        )
+    }
+
+    private fun launchConnectionAttempt(
+        showGuestProgress: Boolean = false,
+        block: suspend (generation: Long) -> Unit
+    ) {
+        synchronized(connectionAttemptLock) {
+            val generation = ++connectionAttemptGeneration
+            connectionAttemptJob?.cancel()
+            _guestConnecting.value = showGuestProgress
+            connectionAttemptJob = viewModelScope.launch {
+                try {
+                    block(generation)
+                } finally {
+                    synchronized(connectionAttemptLock) {
+                        if (generation == connectionAttemptGeneration) {
+                            connectionAttemptJob = null
+                            _guestConnecting.value = false
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun isCurrentConnectionAttempt(generation: Long): Boolean =
+        synchronized(connectionAttemptLock) { generation == connectionAttemptGeneration }
+
+    private fun invalidateConnectionAttempt() {
+        synchronized(connectionAttemptLock) {
+            connectionAttemptGeneration++
+            connectionAttemptJob?.cancel()
+            connectionAttemptJob = null
+            _guestConnecting.value = false
         }
     }
 
@@ -266,44 +310,9 @@ class ConnectionViewModel @Inject constructor(
 
     fun connectToRelayDevice(device: RelayDevice) {
         val roomId = device.roomId ?: return
-        viewModelScope.launch {
-            _guestConnecting.value = true
-            _guestError.value = null
-
-            // Fetch TURN servers before joining room (needed for cross-NAT)
-            val iceServers = guestConnectionRepository.fetchIceServers()
-            if (iceServers.isNotEmpty()) {
-                webRtcManager.setIceServers(iceServers)
-            }
-
+        launchConnectionAttempt(showGuestProgress = true) { generation ->
             // Same-account: join room without password (server skips password for owner)
-            guestConnectionRepository.joinRoom(roomId, "").fold(
-                onSuccess = { roomInfo ->
-                    val isViewer = roomInfo.role == "viewer"
-                    _isViewerMode.value = isViewer
-
-                    phaseOneHandler.reset()
-                    phaseTwoHandler.reset()
-                    connectionStateRepo.tryTransition(ConnectionState.Connecting)
-
-                    if (isViewer) {
-                        connectionStateRepo.tryTransition(ConnectionState.AwaitingHardwareInfo)
-                        connectionStateRepo.tryTransition(ConnectionState.AwaitingSuggestedConfig)
-                        phaseTwoHandler.startListening()
-                    } else {
-                        val dm = getApplication<Application>().resources.displayMetrics
-                        phaseOneHandler.startListening(dm)
-                    }
-
-                    val relayUrl = guestConnectionRepository.getRelayUrl()
-                    webSocketClient.connectRoom(relayUrl, roomInfo.roomId, roomInfo.clientId)
-                    _guestConnecting.value = false
-                },
-                onFailure = { e ->
-                    _guestError.value = e.message
-                    _guestConnecting.value = false
-                }
-            )
+            connectToRoom(generation, roomId, "")
         }
     }
 
@@ -325,26 +334,31 @@ class ConnectionViewModel @Inject constructor(
 
     fun connectWithQr(config: com.reka.remoteplay.core.model.QrScannerConfig) {
         android.util.Log.i("ConnectionVM", "Connecting with QR: $config")
+        launchConnectionAttempt(showGuestProgress = config.hasRelay) { generation ->
+            // Relay path first: signaling via the user's own VPS — stable URL, no
+            // Cloudflare quick-tunnel rate limits. Reuses the proven guest-join flow.
+            if (config.hasRelay) {
+                stopScan()
+                tokenManager.relayUrl = config.relayUrl!!.trimEnd('/')
+                _guestDeviceId.value = config.guestId!!
+                _guestPassword.value = config.guestPass!!
+                android.util.Log.i("ConnectionVM", "QR carries relay room ${config.guestId} — connecting via relay ${config.relayUrl}")
+                connectToRoom(generation, config.guestId!!, config.guestPass!!)
+                return@launchConnectionAttempt
+            }
 
-        // Relay path first: signaling via the user's own VPS — stable URL, no
-        // Cloudflare quick-tunnel rate limits. Reuses the proven guest-join flow.
-        if (config.hasRelay) {
-            stopScan()
-            tokenManager.relayUrl = config.relayUrl!!.trimEnd('/')
-            _guestDeviceId.value = config.guestId!!
-            _guestPassword.value = config.guestPass!!
-            android.util.Log.i("ConnectionVM", "QR carries relay room ${config.guestId} — connecting via relay ${config.relayUrl}")
-            connectAsGuest()
-            return
+            connectDirect(generation, config)
         }
+    }
 
-        // 1. Reset and prepare state first
+    private suspend fun connectDirect(
+        generation: Long,
+        config: com.reka.remoteplay.core.model.QrScannerConfig
+    ) {
         stopScan()
         phaseOneHandler.reset()
         phaseTwoHandler.reset() // clears any pending pairing secret — offer AFTER this line
 
-        // Pairing offer (pairing-protocol-contract-v1.md): only armed when the host actually
-        // minted one (QR carries prv=1/psk/nonce/sid/exp); absent -> legacy path untouched.
         if (config.hasPairingOffer) {
             android.util.Log.i("ConnectionVM", "QR carries a pairing offer (sid=${config.sid}) — will verify after DTLS connects")
             pairingSessionManager.offerPairing(
@@ -355,37 +369,26 @@ class ConnectionViewModel @Inject constructor(
             )
         }
 
-        // 2. Start listening BEFORE initiating the physical connection
-        // This ensures we don't miss the immediate 'hardware_info' message
         val dm = getApplication<Application>().resources.displayMetrics
         android.util.Log.i("ConnectionVM", "Starting PhaseOneHandler listening (Pre-connect)")
         phaseOneHandler.startListening(dm)
 
         val tunnelUrl = config.tunnelUrl
         if (!tunnelUrl.isNullOrEmpty()) {
-            // Internet connection via Cloudflare Tunnel
             val host = tunnelUrl.replace("https://", "").replace("http://", "").trimEnd('/')
             _hostInput.value = host
             _portInput.value = "443"
-            
-            viewModelScope.launch {
-                preferences.saveServer(SavedServer(name = "Remote PC", host = host, port = 443))
-            }
-            
+            preferences.saveServer(SavedServer(name = "Remote PC", host = host, port = 443))
+            if (!isCurrentConnectionAttempt(generation)) return
             connectionStateRepo.tryTransition(ConnectionState.Connecting)
             webSocketClient.connectTunnel(tunnelUrl)
         } else {
-            // LAN connection
             val host = config.ip
             val port = config.port
-            
             _hostInput.value = host
             _portInput.value = port.toString()
-            
-            viewModelScope.launch {
-                preferences.saveServer(SavedServer(name = "Local PC", host = host, port = port))
-            }
-
+            preferences.saveServer(SavedServer(name = "Local PC", host = host, port = port))
+            if (!isCurrentConnectionAttempt(generation)) return
             connectionStateRepo.tryTransition(ConnectionState.Connecting)
             webSocketClient.connect(host, port, isUsb = false)
         }
@@ -396,19 +399,19 @@ class ConnectionViewModel @Inject constructor(
         val port = _portInput.value.toIntOrNull() ?: 8288
         if (host.isEmpty()) return
 
-        stopScan()
-        phaseOneHandler.reset()
-        phaseTwoHandler.reset()
-        connectionStateRepo.tryTransition(ConnectionState.Connecting)
-
-        viewModelScope.launch {
+        launchConnectionAttempt { generation ->
+            stopScan()
+            phaseOneHandler.reset()
+            phaseTwoHandler.reset()
             preferences.saveServer(SavedServer(host = host, port = port))
+            if (!isCurrentConnectionAttempt(generation)) return@launchConnectionAttempt
+            connectionStateRepo.tryTransition(ConnectionState.Connecting)
+
+            val dm = getApplication<Application>().resources.displayMetrics
+            phaseOneHandler.startListening(dm)
+
+            webSocketClient.connect(host, port, isUsb = false)
         }
-
-        val dm = getApplication<Application>().resources.displayMetrics
-        phaseOneHandler.startListening(dm)
-
-        webSocketClient.connect(host, port, isUsb = false)
     }
 
     fun connectToServer(server: SavedServer) {
@@ -418,6 +421,7 @@ class ConnectionViewModel @Inject constructor(
     }
 
     fun disconnect() {
+        invalidateConnectionAttempt()
         audioPlayer.stop()
         videoDecoderManager.releaseAll()
         webSocketClient.disconnect()
@@ -601,6 +605,7 @@ class ConnectionViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
+        invalidateConnectionAttempt()
         serverDiscoveryService.stop()
         iceRestartNetworkCallback?.let { callback ->
             runCatching { connectivityManager?.unregisterNetworkCallback(callback) }

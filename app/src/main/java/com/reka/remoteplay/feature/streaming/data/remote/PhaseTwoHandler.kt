@@ -75,6 +75,7 @@ class PhaseTwoHandler @Inject constructor(
 
     private var messageJob: Job? = null
     private var binaryJob: Job? = null
+    @Volatile private var relayMediaEnabled = false
 
     // Singleton-owned scope: same navigation-survival fix as PhaseOneHandler — the viewer
     // path starts Phase 2 from the QR screen's ViewModel, whose scope dies when the screen
@@ -131,14 +132,6 @@ class PhaseTwoHandler @Inject constructor(
             webSocketClient.sendBinary(RelayMediaProtocol.wrapInput(data))
         }
 
-        // Listen for WebSocket messages
-        messageJob?.cancel()
-        messageJob = handlerScope.launch {
-            webSocketClient.textMessages.collect { text ->
-                handleMessage(text)
-            }
-        }
-
         // Pairing handshake (pairing-protocol-contract-v1.md) — no-op (legacy path) unless a QR
         // pairing offer was armed via ConnectionViewModel before this session started.
         pairingHandshake.start(handlerScope) {
@@ -158,15 +151,30 @@ class PhaseTwoHandler @Inject constructor(
         // relayMediaMode alone — relayMediaMode only reflects host intent, not pairing status.
         binaryJob?.cancel()
         binaryJob = null
+        setRelayMediaMode(false)
+        webSocketClient.onRelayMediaModeChanged = { enabled ->
+            setRelayMediaMode(enabled)
+        }
         webSocketClient.onRelayMediaBinary = { bytes ->
             if (pairingHandshake.isBlocking()) {
                 Log.w(TAG, "Dropping relay-media frame — pairing not verified (fail-closed)")
+            } else if (!relayMediaEnabled) {
+                // Drop queued WS media after media_relay_stop; the active path is P2P now.
             } else {
                 when (RelayMediaProtocol.channelOf(bytes)) {
                     RelayMediaProtocol.CHANNEL_VIDEO -> webRtcManager.feedRelayVideo(RelayMediaProtocol.payload(bytes))
                     RelayMediaProtocol.CHANNEL_AUDIO -> webRtcManager.feedRelayAudio(RelayMediaProtocol.payload(bytes))
                     RelayMediaProtocol.CHANNEL_CURSOR -> webRtcManager.feedRelayCursor(RelayMediaProtocol.payload(bytes))
                 }
+            }
+        }
+
+        // Install the relay mode gate before collecting replayed controls. A start received just
+        // before Phase 2 begins must initialize the direct binary callback before media arrives.
+        messageJob?.cancel()
+        messageJob = handlerScope.launch {
+            webSocketClient.textMessages.collect { text ->
+                handleMessage(text)
             }
         }
     }
@@ -253,14 +261,14 @@ class PhaseTwoHandler @Inject constructor(
                 // rendering while unpaired). Legacy (no pairing offered) behaves exactly as
                 // before — isBlocking() is false, so the transition fires immediately.
                 Log.i(TAG, "Media relay mode ON — media over WebSocket (WebRTC unavailable)")
-                webRtcManager.relayMediaMode = true
+                setRelayMediaMode(true)
                 pairingHandshake.onIceReadySignal()
             }
 
             "media_relay_stop" -> {
                 // A background ICE restart restored P2P — media returns to WebRTC.
                 Log.i(TAG, "Media relay mode OFF — WebRTC path resumed")
-                webRtcManager.relayMediaMode = false
+                setRelayMediaMode(false)
             }
 
             "request_ice_restart" -> {
@@ -333,6 +341,11 @@ class PhaseTwoHandler @Inject constructor(
         }
     }
 
+    private fun setRelayMediaMode(enabled: Boolean) {
+        relayMediaEnabled = enabled
+        webRtcManager.relayMediaMode = enabled
+    }
+
     fun sendStartStreaming() {
         // Fail-closed gate (pairing-protocol-contract-v1.md): defense-in-depth alongside the
         // iceReady gate above — never send start_streaming while pairing is unresolved.
@@ -359,6 +372,8 @@ class PhaseTwoHandler @Inject constructor(
         binaryJob = null
         pairingHandshake.reset()
         webSocketClient.onRelayMediaBinary = null // unhook direct media sink
+        webSocketClient.onRelayMediaModeChanged = null
+        relayMediaEnabled = false
         webRtcManager.relayMediaMode = false
         webRtcManager.dispose()
         _monitors.value = emptyList()

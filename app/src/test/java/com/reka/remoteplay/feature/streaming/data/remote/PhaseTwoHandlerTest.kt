@@ -260,7 +260,6 @@ class PhaseTwoHandlerTest {
         textMessages.emit(json)
         advanceUntilIdle()
 
-        verify { webRtcManager.relayMediaMode = true }
         // Regression guard for the fail-closed hole: PhaseTwoHandler must NOT flip
         // ReadyToStream itself here — that decision belongs to the (gated) coordinator.
         verify { pairingHandshake.onIceReadySignal() }
@@ -284,14 +283,48 @@ class PhaseTwoHandlerTest {
     }
 
     @Test
-    fun `onRelayMediaBinary renders frames once pairing is resolved (or legacy, never offered)`() {
+    fun `onRelayMediaBinary renders frames once pairing is resolved and relay mode is active`() {
         every { pairingHandshake.isBlocking() } returns false
-        val slot = slot<(ByteArray) -> Unit>()
-        every { webSocketClient.onRelayMediaBinary = capture(slot) } just Runs
+        val modeSlot = slot<(Boolean) -> Unit>()
+        val mediaSlot = slot<(ByteArray) -> Unit>()
+        every { webSocketClient.onRelayMediaModeChanged = capture(modeSlot) } just Runs
+        every { webSocketClient.onRelayMediaBinary = capture(mediaSlot) } just Runs
 
         handler.startListening()
-        slot.captured.invoke(byteArrayOf(0xF1.toByte(), 0, 1, 2, 3))
+        modeSlot.captured.invoke(true)
+        mediaSlot.captured.invoke(byteArrayOf(0xF1.toByte(), 0, 1, 2, 3))
 
         verify { webRtcManager.feedRelayVideo(any()) }
+    }
+
+    @Test
+    fun `replayed media relay start enables direct media before collector continues`() = runTest(UnconfinedTestDispatcher()) {
+        every { pairingHandshake.isBlocking() } returns false
+        val mediaSlot = slot<(ByteArray) -> Unit>()
+        every { webSocketClient.onRelayMediaBinary = capture(mediaSlot) } just Runs
+        textMessages.emit("""{"type":"media_relay_start"}""")
+
+        handler.startListening()
+        advanceUntilIdle()
+        mediaSlot.captured.invoke(byteArrayOf(0xF1.toByte(), 0, 1, 2, 3))
+
+        verify { webRtcManager.relayMediaMode = true }
+        verify { webRtcManager.feedRelayVideo(any()) }
+    }
+
+    @Test
+    fun `onRelayMediaBinary drops queued frames after relay mode stops`() {
+        every { pairingHandshake.isBlocking() } returns false
+        val modeSlot = slot<(Boolean) -> Unit>()
+        val mediaSlot = slot<(ByteArray) -> Unit>()
+        every { webSocketClient.onRelayMediaModeChanged = capture(modeSlot) } just Runs
+        every { webSocketClient.onRelayMediaBinary = capture(mediaSlot) } just Runs
+
+        handler.startListening()
+        modeSlot.captured.invoke(true)
+        modeSlot.captured.invoke(false)
+        mediaSlot.captured.invoke(byteArrayOf(0xF1.toByte(), 0, 1, 2, 3))
+
+        verify(exactly = 0) { webRtcManager.feedRelayVideo(any()) }
     }
 }

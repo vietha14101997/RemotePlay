@@ -25,6 +25,7 @@ class WebSocketClient @Inject constructor() {
     @Volatile private var pingJob: Job? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val lastPongTime = AtomicLong(0)
+    private val connectionGeneration = AtomicLong(0)
 
     // --- Reconnect state (P2 signaling resilience) ---
     /** URL used for the most recent [connectWithUrl] call; resent verbatim on every reconnect
@@ -88,6 +89,10 @@ class WebSocketClient @Inject constructor() {
      */
     @Volatile
     var onRelayMediaBinary: ((ByteArray) -> Unit)? = null
+
+    /** Updated on the socket reader thread before the matching text message is published. */
+    @Volatile
+    var onRelayMediaModeChanged: ((Boolean) -> Unit)? = null
 
     fun connect(host: String, port: Int = 8288, token: String? = null, isUsb: Boolean = false) {
         isRelayTransport = false
@@ -160,19 +165,34 @@ class WebSocketClient @Inject constructor() {
      * @param isReconnect true when this call originates from [scheduleReconnect] retrying the
      *   same [lastConnectUrl] after a drop, rather than a fresh explicit connect*() call.
      */
-    private fun connectWithUrl(url: String, isReconnect: Boolean = false) {
-        // A1: a disconnect() that lands AFTER the reconnect delay but before/while this
-        // runs must abort the retry. connectWithUrl has no suspension points, so coroutine
-        // cancellation can't interrupt it once started — re-check userInitiatedClose under
-        // the lock, otherwise a zombie socket comes up "connected" after the user left.
-        if (isReconnect) {
-            synchronized(reconnectLock) { if (userInitiatedClose) return }
-        }
+    private fun connectWithUrl(
+        url: String,
+        isReconnect: Boolean = false,
+        reconnectFromGeneration: Long? = null
+    ) {
+        val oldSocket: WebSocket?
+        val generation: Long
+        synchronized(reconnectLock) {
+            // Cancellation alone cannot stop a reconnect coroutine that already resumed. Its
+            // source generation must still own the connection before it may create a new socket.
+            if (isReconnect &&
+                (userInitiatedClose || reconnectFromGeneration != connectionGeneration.get())
+            ) return
 
-        pingJob?.cancel()
-        pingJob = null
-        webSocket?.close(1000, null)
-        webSocket = null
+            generation = connectionGeneration.incrementAndGet()
+            oldSocket = webSocket
+            webSocket = null
+            pingJob?.cancel()
+            pingJob = null
+
+            if (!isReconnect) {
+                lastConnectUrl = url
+                userInitiatedClose = false
+                reconnectJob?.cancel()
+                reconnectJob = null
+            }
+        }
+        oldSocket?.close(1000, null)
 
         // Drop replayed messages from the previous connection: with replay > 0, a new
         // collector would otherwise re-process the old session's handshake (observed:
@@ -182,12 +202,6 @@ class WebSocketClient @Inject constructor() {
         _binaryMessages.resetReplayCache()
 
         if (!isReconnect) {
-            synchronized(reconnectLock) {
-                lastConnectUrl = url
-                userInitiatedClose = false
-                reconnectJob?.cancel()
-                reconnectJob = null
-            }
             reconnectPolicy.reset()
             _reconnectAttempt.value = 0
         }
@@ -196,35 +210,52 @@ class WebSocketClient @Inject constructor() {
         _connectionState.value = if (isReconnect) WsConnectionState.RECONNECTING else WsConnectionState.CONNECTING
 
         val request = Request.Builder().url(url).build()
-        webSocket = client.newWebSocket(request, object : WebSocketListener() {
+        val relayGate = RelayMediaOrderGate()
+        val socket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                if (webSocket !== this@WebSocketClient.webSocket) return
-                Log.d(TAG, "WebSocket connected")
+                val relayModeSink: ((Boolean) -> Unit)?
                 synchronized(reconnectLock) {
+                    if (!claimCurrentSocket(generation, webSocket)) return
+                    Log.d(TAG, "WebSocket connected")
                     reconnectJob?.cancel()
                     reconnectJob = null
+                    reconnectPolicy.reset()
+                    _reconnectAttempt.value = 0
+                    _connectionState.value = WsConnectionState.CONNECTED
+                    relayModeSink = onRelayMediaModeChanged
+                    startPingLoop(generation, webSocket)
                 }
-                reconnectPolicy.reset()
-                _reconnectAttempt.value = 0
-                _connectionState.value = WsConnectionState.CONNECTED
-                startPingLoop()
+                if (isCurrentSocket(generation, webSocket)) relayModeSink?.invoke(false)
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                Log.d(TAG, "WS Message Received: $text")
+                val relayModeChange: Boolean?
+                val relayModeSink: ((Boolean) -> Unit)?
+                synchronized(reconnectLock) {
+                    if (!claimCurrentSocket(generation, webSocket)) return
+                    // Any inbound frame proves the socket is alive. During relay-media, large video
+                    // messages can delay the application-level pong on this same ordered TCP stream.
+                    lastPongTime.set(System.currentTimeMillis())
+                    Log.d(TAG, "WS Message Received: $text")
+                    relayModeChange = relayGate.onText(text)
+                    relayModeSink = if (relayModeChange != null) onRelayMediaModeChanged else null
+                }
+
+                // OkHttp serializes callbacks for a socket, so invoking this before publication
+                // preserves relay start/stop ordering without holding the reconnect state lock.
+                if (relayModeChange != null && isCurrentSocket(generation, webSocket)) {
+                    relayModeSink?.invoke(relayModeChange)
+                }
+                if (!isCurrentSocket(generation, webSocket)) return
                 if (text == "ping" || text.startsWith("ping:")) {
                     val seq = text.removePrefix("ping:").takeIf { it != text }
-                    val pong = if (seq != null) "pong:$seq" else "pong"
-                    webSocket.send(pong)
+                    webSocket.send(if (seq != null) "pong:$seq" else "pong")
                     return
                 }
                 if (text == "pong" || text.startsWith("pong:")) {
-                    val sentTime = text.removePrefix("pong:").toLongOrNull()
-                    if (sentTime != null) {
-                        val rtt = System.currentTimeMillis() - sentTime
-                        _rttMs.value = rtt.toFloat()
+                    text.removePrefix("pong:").toLongOrNull()?.let { sentTime ->
+                        _rttMs.value = (System.currentTimeMillis() - sentTime).toFloat()
                     }
-                    lastPongTime.set(System.currentTimeMillis())
                     _pongEvents.tryEmit(Unit)
                     return
                 }
@@ -234,51 +265,81 @@ class WebSocketClient @Inject constructor() {
 
             override fun onMessage(webSocket: WebSocket, bytes: okio.ByteString) {
                 val data = bytes.toByteArray()
-                // Relay-media fast path: ordered + lossless delivery on the reader
-                // thread. See onRelayMediaBinary docs — the SharedFlow below would
-                // drop/replay chunks and corrupt the relay video stream.
-                val mediaSink = onRelayMediaBinary
-                if (mediaSink != null && RelayMediaProtocol.isMediaEnvelope(data)) {
-                    mediaSink(data)
+                val isRelayMedia = RelayMediaProtocol.isMediaEnvelope(data)
+                val mediaSink: ((ByteArray) -> Unit)?
+                synchronized(reconnectLock) {
+                    if (!claimCurrentSocket(generation, webSocket)) return
+                    lastPongTime.set(System.currentTimeMillis())
+                    mediaSink = if (isRelayMedia && relayGate.acceptsMedia()) {
+                        onRelayMediaBinary
+                    } else {
+                        null
+                    }
+                }
+
+                if (isRelayMedia) {
+                    // Decoder execution may synchronously request a keyframe via sendText(). Never
+                    // invoke it under reconnectLock; revalidate the socket immediately beforehand.
+                    if (mediaSink != null && isCurrentSocket(generation, webSocket)) mediaSink(data)
                     return
                 }
-                _binaryMessages.tryEmit(data)
+                if (isCurrentSocket(generation, webSocket)) _binaryMessages.tryEmit(data)
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                Log.d(TAG, "WebSocket closing: $code $reason")
+                synchronized(reconnectLock) {
+                    if (!claimCurrentSocket(generation, webSocket)) return
+                    Log.d(TAG, "WebSocket closing: $code $reason")
+                }
                 webSocket.close(1000, null)
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                if (webSocket !== this@WebSocketClient.webSocket) return
-                Log.d(TAG, "WebSocket closed: $code $reason")
-                if (userInitiatedClose) {
-                    _connectionState.value = WsConnectionState.DISCONNECTED
-                } else {
-                    scheduleReconnect()
+                synchronized(reconnectLock) {
+                    if (!claimCurrentSocket(generation, webSocket)) return
+                    Log.d(TAG, "WebSocket closed: $code $reason")
+                    scheduleReconnect(generation, webSocket)
                 }
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                if (webSocket !== this@WebSocketClient.webSocket) return
-                Log.e(TAG, "WebSocket failure: ${t.message}", t)
-                if (userInitiatedClose) {
-                    _connectionState.value = WsConnectionState.DISCONNECTED
-                } else {
-                    scheduleReconnect()
+                synchronized(reconnectLock) {
+                    if (!claimCurrentSocket(generation, webSocket)) return
+                    Log.e(TAG, "WebSocket failure: ${t.message}", t)
+                    scheduleReconnect(generation, webSocket)
                 }
             }
         })
+        synchronized(reconnectLock) {
+            if (generation == connectionGeneration.get() && !userInitiatedClose) {
+                webSocket = socket
+            } else {
+                socket.cancel()
+            }
+        }
     }
 
+    /** Caller must hold [reconnectLock]. Allows synchronous OkHttp callbacks to claim the socket. */
+    private fun claimCurrentSocket(generation: Long, socket: WebSocket): Boolean {
+        if (generation != connectionGeneration.get() || userInitiatedClose) return false
+        if (webSocket == null) webSocket = socket
+        return socket === webSocket
+    }
+
+    private fun isCurrentSocket(generation: Long, socket: WebSocket): Boolean =
+        synchronized(reconnectLock) { claimCurrentSocket(generation, socket) }
+
     fun sendText(text: String): Boolean {
-        return webSocket?.send(text) ?: false
+        return synchronized(reconnectLock) {
+            if (userInitiatedClose) false else webSocket?.send(text) ?: false
+        }
     }
 
     /** Send a binary WS frame — used by relay-media fallback (input back-channel over the room WS). */
     fun sendBinary(data: ByteArray): Boolean {
-        return webSocket?.send(okio.ByteString.of(*data)) ?: false
+        return synchronized(reconnectLock) {
+            if (userInitiatedClose) false else webSocket?.send(okio.ByteString.of(*data)) ?: false
+        }
     }
 
     /**
@@ -287,18 +348,24 @@ class WebSocketClient @Inject constructor() {
      * user-initiated via [userInitiatedClose] and will not schedule a reconnect.
      */
     fun disconnect() {
+        val socket: WebSocket?
+        val relayModeSink: ((Boolean) -> Unit)?
         synchronized(reconnectLock) {
+            connectionGeneration.incrementAndGet()
             userInitiatedClose = true
             reconnectJob?.cancel()
             reconnectJob = null
+            pingJob?.cancel()
+            pingJob = null
+            socket = webSocket
+            webSocket = null
+            reconnectPolicy.reset()
+            _reconnectAttempt.value = 0
+            relayModeSink = onRelayMediaModeChanged
+            _connectionState.value = WsConnectionState.DISCONNECTED
         }
-        reconnectPolicy.reset()
-        _reconnectAttempt.value = 0
-        pingJob?.cancel()
-        pingJob = null
-        webSocket?.close(1000, "Client disconnect")
-        webSocket = null
-        _connectionState.value = WsConnectionState.DISCONNECTED
+        relayModeSink?.invoke(false)
+        socket?.close(1000, "Client disconnect")
     }
 
     /**
@@ -307,12 +374,20 @@ class WebSocketClient @Inject constructor() {
      * pending (single-flight guard). Resends [lastConnectUrl] verbatim so the relay sees the
      * same `session`/auth params on the new connection.
      */
-    private fun scheduleReconnect() {
+    private fun scheduleReconnect(failedGeneration: Long, failedSocket: WebSocket) {
         val url: String
         val delayMs: Long
+        val reconnectGeneration: Long
         synchronized(reconnectLock) {
+            if (failedGeneration != connectionGeneration.get() || failedSocket !== webSocket) return
             if (userInitiatedClose) return
             if (reconnectJob?.isActive == true) return // already have one in flight
+            // Invalidate every callback and ping operation belonging to the failed socket now,
+            // not after the reconnect delay expires.
+            reconnectGeneration = connectionGeneration.incrementAndGet()
+            webSocket = null
+            pingJob?.cancel()
+            pingJob = null
             url = lastConnectUrl ?: run {
                 // Never had anything to connect to — nothing to retry.
                 _connectionState.value = WsConnectionState.FAILED
@@ -322,22 +397,40 @@ class WebSocketClient @Inject constructor() {
             _reconnectAttempt.value = reconnectPolicy.attempt
             _connectionState.value = WsConnectionState.RECONNECTING
             Log.d(TAG, "Reconnect attempt ${reconnectPolicy.attempt} scheduled in ${delayMs}ms")
-            reconnectJob = scope.launch {
+            val job = scope.launch(start = CoroutineStart.LAZY) {
                 delay(delayMs)
-                connectWithUrl(url, isReconnect = true)
+                synchronized(reconnectLock) {
+                    // Transfer ownership before dialing so an immediate failure can schedule the
+                    // following attempt instead of seeing this coroutine as still in flight.
+                    if (reconnectJob !== coroutineContext[Job]) return@launch
+                    reconnectJob = null
+                }
+                connectWithUrl(
+                    url,
+                    isReconnect = true,
+                    reconnectFromGeneration = reconnectGeneration
+                )
             }
+            reconnectJob = job
+            job.start()
         }
     }
 
-    private fun startPingLoop() {
+    private fun startPingLoop(generation: Long, socket: WebSocket) {
         pingJob?.cancel()
         pingJob = scope.launch {
             // Seed lastPongTime so the first interval doesn't false-positive.
             lastPongTime.set(System.currentTimeMillis())
             while (isActive) {
                 delay(PING_INTERVAL_MS)
+                if (!isCurrentSocket(generation, socket)) break
                 val ts = System.currentTimeMillis()
-                webSocket?.send("ping:$ts")
+                if (!socket.send("ping:$ts")) {
+                    Log.w(TAG, "Ping send failed — reconnecting")
+                    socket.cancel()
+                    scheduleReconnect(generation, socket)
+                    break
+                }
 
                 // C2: detect silent server death (no FIN/RST sent).
                 // If we haven't received a pong for 3 consecutive intervals, treat it as a
@@ -345,9 +438,8 @@ class WebSocketClient @Inject constructor() {
                 val elapsed = System.currentTimeMillis() - lastPongTime.get()
                 if (elapsed > PING_TIMEOUT_MS) {
                     Log.w(TAG, "Ping timeout (${elapsed}ms since last pong) — reconnecting")
-                    webSocket?.cancel()
-                    webSocket = null
-                    scheduleReconnect()
+                    socket.cancel()
+                    scheduleReconnect(generation, socket)
                     break
                 }
             }

@@ -4,15 +4,23 @@ import android.util.Log
 import io.mockk.every
 import io.mockk.mockkStatic
 import io.mockk.unmockkAll
+import java.io.BufferedReader
+import java.io.InputStreamReader
 import java.net.ServerSocket
+import java.security.MessageDigest
+import java.util.Base64
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import kotlin.concurrent.thread
 
 /**
  * Tests for [WebSocketClient]'s reconnect wiring: a transport drop schedules an auto-reconnect
@@ -59,6 +67,18 @@ class WebSocketClientReconnectTest {
     }
 
     @Test
+    fun `consecutive immediate reconnect failures schedule subsequent retries`() = runBlocking {
+        client.connect("127.0.0.1", refusedPort())
+
+        val attempt = withTimeout(8_000) {
+            client.reconnectAttempt.first { it >= 2 }
+        }
+
+        assertTrue("Expected at least two fast reconnect failures", attempt >= 2)
+        assertEquals(WsConnectionState.RECONNECTING, client.connectionState.value)
+    }
+
+    @Test
     fun `user-initiated disconnect cancels the pending reconnect and does not retry`() = runBlocking {
         client.connect("127.0.0.1", refusedPort())
 
@@ -81,5 +101,102 @@ class WebSocketClientReconnectTest {
     fun `disconnect while idle (never connected) does not throw and stays DISCONNECTED`() {
         client.disconnect()
         assertEquals(WsConnectionState.DISCONNECTED, client.connectionState.value)
+    }
+
+    @Test
+    fun `relay binary callback does not hold reconnect lock`() = runBlocking {
+        LocalWebSocketServer().use { server ->
+            val callbackEntered = CountDownLatch(1)
+            val releaseCallback = CountDownLatch(1)
+            val disconnectCompleted = CountDownLatch(1)
+            client.onRelayMediaBinary = {
+                callbackEntered.countDown()
+                releaseCallback.await(5, TimeUnit.SECONDS)
+            }
+
+            client.connect("127.0.0.1", server.port)
+            withTimeout(5_000) {
+                client.connectionState.first { it == WsConnectionState.CONNECTED }
+            }
+            server.sendText("""{"type":"media_relay_start"}""")
+            server.sendBinary(byteArrayOf(RelayMediaProtocol.CHANNEL_VIDEO, 1))
+            assertTrue("Relay callback was not invoked", callbackEntered.await(2, TimeUnit.SECONDS))
+
+            thread(start = true, name = "disconnect-during-relay-callback") {
+                client.disconnect()
+                disconnectCompleted.countDown()
+            }
+            try {
+                assertTrue(
+                    "disconnect blocked on reconnectLock while relay callback was running",
+                    disconnectCompleted.await(1, TimeUnit.SECONDS)
+                )
+            } finally {
+                releaseCallback.countDown()
+            }
+        }
+    }
+
+    private class LocalWebSocketServer : AutoCloseable {
+        private val serverSocket = ServerSocket(0)
+        private val socketReady = CountDownLatch(1)
+        private val socketThread = thread(start = true, name = "unit-test-websocket") {
+            val socket = serverSocket.accept()
+            val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
+            var webSocketKey: String? = null
+            while (true) {
+                val line = reader.readLine() ?: return@thread
+                if (line.isEmpty()) break
+                if (line.startsWith("Sec-WebSocket-Key:", ignoreCase = true)) {
+                    webSocketKey = line.substringAfter(':').trim()
+                }
+            }
+            val accept = Base64.getEncoder().encodeToString(
+                MessageDigest.getInstance("SHA-1").digest(
+                    (requireNotNull(webSocketKey) + WEB_SOCKET_GUID).toByteArray()
+                )
+            )
+            socket.getOutputStream().apply {
+                write(
+                    ("HTTP/1.1 101 Switching Protocols\r\n" +
+                        "Upgrade: websocket\r\n" +
+                        "Connection: Upgrade\r\n" +
+                        "Sec-WebSocket-Accept: $accept\r\n\r\n").toByteArray()
+                )
+                flush()
+            }
+            acceptedSocket = socket
+            socketReady.countDown()
+        }
+
+        @Volatile private var acceptedSocket: java.net.Socket? = null
+        val port: Int get() = serverSocket.localPort
+
+        fun sendText(text: String) = sendFrame(0x1, text.toByteArray())
+
+        fun sendBinary(data: ByteArray) = sendFrame(0x2, data)
+
+        private fun sendFrame(opcode: Int, payload: ByteArray) {
+            check(payload.size < 126)
+            check(socketReady.await(2, TimeUnit.SECONDS))
+            acceptedSocket!!.getOutputStream().apply {
+                synchronized(this) {
+                    write(0x80 or opcode)
+                    write(payload.size)
+                    write(payload)
+                    flush()
+                }
+            }
+        }
+
+        override fun close() {
+            acceptedSocket?.close()
+            serverSocket.close()
+            socketThread.join(1_000)
+        }
+
+        companion object {
+            private const val WEB_SOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+        }
     }
 }
