@@ -99,8 +99,10 @@ class VideoFrameParser(private val monitorIndex: Int) {
         if (chunks.size >= expected && expected > 0) {
             val assembled = assembleChunks(chunks, expected)
             chunks.clear()
+            // Verbose: IDR fires on every scene change + resume → ~1-10/sec. Real diagnostics
+            // don't need it per frame; keep it filterable.
             if (type == FrameType.KEYFRAME) {
-                Log.d(TAG, "[$monitorIndex] IDR assembled: $expected chunks, ${assembled.size} bytes")
+                Log.v(TAG, "[$monitorIndex] IDR assembled: $expected chunks, ${assembled.size} bytes")
             }
             return ParsedFrame(type, assembled)
         }

@@ -737,8 +737,15 @@ class WebRtcManager @Inject constructor(
             onRelayInput?.invoke(data)
             return
         }
-        val dc = inputDc ?: return
-        if (dc.state() != DataChannel.State.OPEN) return
+        // No relay-start yet — fall back to WS if P2P DC is also unavailable. This prevents
+        // a ~8s input blackout during ICE negotiation when P2P will eventually fail and the
+        // host falls back to media-relay (relayMediaMode flips on then). The server accepts
+        // WS input regardless of relay-media state, so this is safe to send early.
+        val dc = inputDc
+        if (dc == null || dc.state() != DataChannel.State.OPEN) {
+            onRelayInput?.invoke(data)
+            return
+        }
         dc.send(DataChannel.Buffer(ByteBuffer.wrap(data), true))
     }
 

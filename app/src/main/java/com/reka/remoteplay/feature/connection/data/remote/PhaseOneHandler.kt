@@ -55,7 +55,6 @@ class PhaseOneHandler @Inject constructor(
         messageJob = handlerScope.launch {
             Log.d(TAG, "Message collection job started")
             webSocketClient.textMessages.collect { text ->
-                Log.v(TAG, "Collected text message: ${text.take(50)}...")
                 handleTextMessage(text, displayMetrics)
             }
         }
@@ -69,9 +68,7 @@ class PhaseOneHandler @Inject constructor(
     }
 
     private fun handleTextMessage(text: String, displayMetrics: DisplayMetrics) {
-        android.util.Log.e("PhaseOneHandler", "!!! handleTextMessage START !!! Type detection for: ${text.take(100)}")
         val type = MessageParser.getMessageType(text)
-        android.util.Log.e("PhaseOneHandler", "!!! Detected type: $type")
         
         if (type == null) return
 

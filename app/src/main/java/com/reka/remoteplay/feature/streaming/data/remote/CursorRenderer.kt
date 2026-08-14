@@ -57,14 +57,36 @@ class CursorRenderer @Inject constructor() {
 
     private var posCount = 0L
 
+    /**
+     * Apply cursor position from JSON `cursor_position` message (server fallback
+     * when DataChannel is unavailable — e.g. relay-media mode).
+     * Mirrors handleCursorData()'s state update + image cache lookup.
+     */
+    fun handleCursorPosition(
+        monitorIndex: Int,
+        u: Float,
+        v: Float,
+        visible: Boolean,
+        cursorType: Int,
+        cursorId: Long
+    ) {
+        posCount++
+        _cursorState.value = CursorState(
+            monitorIndex = monitorIndex,
+            u = u, v = v,
+            visible = visible,
+            cursorType = cursorType,
+            cursorId = cursorId
+        )
+        val cached = cursorImageCache[cursorId]
+        if (cached != null) {
+            _cursorImage.value = cached
+        }
+    }
+
     /** Parse binary cursor position from cursor DataChannel */
     fun handleCursorData(data: ByteArray) {
         posCount++
-        // Log first few + periodic to verify data is flowing
-        if (posCount <= 3 || posCount % 500 == 0L) {
-            val hex = data.take(19.coerceAtMost(data.size)).joinToString(" ") { String.format("%02X", it) }
-            Log.d(TAG, "Cursor #$posCount: size=${data.size}, hex=[$hex]")
-        }
         if (data.size < 19 || data[0] != 0x01.toByte()) return
 
         val buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
@@ -75,10 +97,6 @@ class CursorRenderer @Inject constructor() {
         val visible = (flags and 0x01) != 0
         val cursorType = (flags shr 1) and 0x0F
         val cursorId = buf.getLong(11)
-
-        if (posCount <= 3) {
-            Log.d(TAG, "Parsed: mon=$monitorIndex u=${"%.3f".format(u)} v=${"%.3f".format(v)} vis=$visible type=$cursorType id=$cursorId")
-        }
 
         _cursorState.value = CursorState(
             monitorIndex = monitorIndex,

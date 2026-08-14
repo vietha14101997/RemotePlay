@@ -231,12 +231,20 @@ class WebSocketClient @Inject constructor() {
             override fun onMessage(webSocket: WebSocket, text: String) {
                 val relayModeChange: Boolean?
                 val relayModeSink: ((Boolean) -> Unit)?
+                // Parse once and hoist outside the synchronized block so both receive and emit
+                // paths can use the same `HIGH_FREQ_WS_TYPES` filter without parsing twice.
+                val type = MessageParser.getMessageType(text)
                 synchronized(reconnectLock) {
                     if (!claimCurrentSocket(generation, webSocket)) return
                     // Any inbound frame proves the socket is alive. During relay-media, large video
                     // messages can delay the application-level pong on this same ordered TCP stream.
                     lastPongTime.set(System.currentTimeMillis())
-                    Log.d(TAG, "WS Message Received: $text")
+                    // Skip verbose log entirely for known high-frequency types — cursor_position
+                    // arrives at ~60Hz, frameTiming at 1Hz each still hundreds of bytes. Even a
+                    // 80-char truncated Log.v line keeps logcat scrolling.
+                    if (type !in HIGH_FREQ_WS_TYPES) {
+                        Log.v(TAG, "WS Message Received: ${text.take(80)}")
+                    }
                     relayModeChange = relayGate.onText(text)
                     relayModeSink = if (relayModeChange != null) onRelayMediaModeChanged else null
                 }
@@ -260,7 +268,12 @@ class WebSocketClient @Inject constructor() {
                     return
                 }
                 val emitted = _textMessages.tryEmit(text)
-                Log.d(TAG, "WS Message emitted to SharedFlow: $emitted (buffer: ${_textMessages.subscriptionCount.value} subscribers)")
+                // Wrap in the same `HIGH_FREQ_WS_TYPES` filter as the receive log. Emitting at
+                // 60Hz from the cursor channel alone drowns the log; we still log the rare types
+                // (config_complete, answer, candidate, etc.) so protocol milestones are visible.
+                if (type !in HIGH_FREQ_WS_TYPES) {
+                    Log.v(TAG, "WS Message emitted: $emitted (subs=${_textMessages.subscriptionCount.value})")
+                }
             }
 
             override fun onMessage(webSocket: WebSocket, bytes: okio.ByteString) {
@@ -461,6 +474,22 @@ class WebSocketClient @Inject constructor() {
     companion object {
         private const val TAG = "WebSocketClient"
         private const val PING_INTERVAL_MS = 3_000L
+
+        /**
+         * WS message types we explicitly do NOT log on the receive path.
+         * Cursor position arrives at ~60Hz, frameTiming carries ~10-frame arrays — these
+         * dominate the log even after the 80-char truncation. They're noisy by design, not
+         * flagged errors. Add new types here ONLY when the volume is proven to be a problem.
+         */
+        private val HIGH_FREQ_WS_TYPES = setOf(
+            "cursor_position",
+            "frameTiming",
+            "decoder_ready",
+            "request_keyframe",
+            "fps_feedback",
+            "quality_feedback",
+        )
+
         /** 3 missed pings before declaring connection dead. */
         private const val PING_TIMEOUT_MS = PING_INTERVAL_MS * 3
     }

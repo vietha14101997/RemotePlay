@@ -295,6 +295,21 @@ class PhaseTwoHandler @Inject constructor(
                 )
             }
 
+            "cursor_position" -> {
+                // Server fallback for cursor position when DataChannel is unavailable
+                // (relay-media mode, or any P2P failure). The primary path is the binary
+                // 19-byte frame on the cursor DataChannel (handled via WebRtcManager).
+                val msg = MessageParser.parse<CursorPositionMessage>(text) ?: return
+                cursorRenderer.handleCursorPosition(
+                    monitorIndex = msg.monitorIndex,
+                    u = msg.u,
+                    v = msg.v,
+                    visible = msg.visible,
+                    cursorType = msg.cursorType,
+                    cursorId = msg.cursorId
+                )
+            }
+
             "pairing_host_proof" -> {
                 // Host's reply to our pairing_client_proof — verified inside the coordinator,
                 // fail-closed on any mismatch. See pairing-protocol-contract-v1.md.

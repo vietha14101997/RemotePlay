@@ -12,12 +12,14 @@ object MessageParser {
     private val mapAdapter = moshi.adapter(Map::class.java)
 
     fun getMessageType(rawJson: String): String? {
-        android.util.Log.e("MessageParser", "Attempting to get type from: ${rawJson.take(100)}")
+        // Fast path: skip JSON parsing for plain-text control frames minted by the server
+        // (ping, pong:N, etc.) — they will trip Moshi otherwise and spam a JsonEncodingException
+        // ~1/2s. The protocol layer treats these as unstructured control frames, never JSON.
+        if (rawJson.isEmpty() || rawJson[0] != '{') return null
         return try {
             @Suppress("UNCHECKED_CAST")
             val map = mapAdapter.fromJson(rawJson) as? Map<String, Any?>
             val type = map?.get("type") as? String
-            android.util.Log.e("MessageParser", "Extracted type: $type")
             if (type == null) {
                 android.util.Log.w("MessageParser", "Unknown message type in: $rawJson")
             }
