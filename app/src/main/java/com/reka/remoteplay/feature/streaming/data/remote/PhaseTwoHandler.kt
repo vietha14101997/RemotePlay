@@ -226,16 +226,20 @@ class PhaseTwoHandler @Inject constructor(
                 if (msg.candidate == "end-of-candidates") {
                     webRtcManager.onEndOfCandidates()
                 } else {
-                    val resolved = mdnsResolver.resolveIfNeeded(msg.candidate)
-                    webRtcManager.addMainIceCandidate(null, 0, resolved)
+                    var resolved = mdnsResolver.resolveIfNeeded(msg.candidate).trim()
+                    if (resolved.startsWith("a=", ignoreCase = true)) resolved = resolved.substring(2)
+                    if (!resolved.startsWith("candidate:", ignoreCase = true)) resolved = "candidate:$resolved"
+                    webRtcManager.addMainIceCandidate("0", 0, resolved)
                 }
             }
 
             "video_candidate" -> {
                 // ICE candidate for a video PC
                 val msg = MessageParser.parse<VideoCandidateMessage>(text) ?: return
-                val resolved = mdnsResolver.resolveIfNeeded(msg.candidate)
-                webRtcManager.addVideoIceCandidate(msg.monitorIndex, null, 0, resolved)
+                var resolved = mdnsResolver.resolveIfNeeded(msg.candidate).trim()
+                if (resolved.startsWith("a=", ignoreCase = true)) resolved = resolved.substring(2)
+                if (!resolved.startsWith("candidate:", ignoreCase = true)) resolved = "candidate:$resolved"
+                webRtcManager.addVideoIceCandidate(msg.monitorIndex, "0", 0, resolved)
             }
 
             "ice_ready" -> {
