@@ -51,7 +51,8 @@ data class DisplayConfigMessage(
     @param:Json(name = "preferGpu") val preferGpu: String? = null,
     @param:Json(name = "monitorType") val monitorType: String = "standard",
     @param:Json(name = "isUsbMode") val isUsbMode: Boolean = false,
-    @param:Json(name = "windowsScale") val windowsScale: Int = 125
+    @param:Json(name = "windowsScale") val windowsScale: Int = 125,
+    @param:Json(name = "streamMode") val streamMode: String = "gaming"
 )
 
 // ==================== Phase 5: ICE Restart on Network Change (Client -> Server) ====================
@@ -131,6 +132,7 @@ data class UpdateConfigMessage(
     @param:Json(name = "qualityPreset") val qualityPreset: String? = null,
     @param:Json(name = "screenWidth") val screenWidth: Int? = null,
     @param:Json(name = "screenHeight") val screenHeight: Int? = null,
+    @param:Json(name = "streamMode") val streamMode: String? = null
 )
 
 /** M2: type-safe replacement for the raw JSON string previously used in StreamingViewModel. */

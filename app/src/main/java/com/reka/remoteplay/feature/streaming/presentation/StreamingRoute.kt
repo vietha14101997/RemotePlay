@@ -26,6 +26,7 @@ fun StreamingRoute(
     val streamFps by viewModel.streamFps.collectAsState()
     val availableFpsOptions by viewModel.availableFpsOptions.collectAsState()
     val qualityPreset by viewModel.qualityPreset.collectAsState()
+    val streamMode by viewModel.streamMode.collectAsState()
     val viewerQuality by viewModel.viewerQuality.collectAsState()
 
     val state = StreamingUiState(
@@ -45,6 +46,7 @@ fun StreamingRoute(
         availableFpsOptions = availableFpsOptions,
         qualityPreset = qualityPreset,
         qualityPresetHeights = viewModel.qualityPresetHeights,
+        streamMode = streamMode,
         isViewerMode = false, // TODO: pass from ConnectionViewModel via nav args
         viewerQuality = viewerQuality
     )
@@ -69,6 +71,7 @@ fun StreamingRoute(
             onReConfineCursor = viewModel::reConfineCursor,
             onChangeFps = viewModel::changeFps,
             onChangeQualityPreset = viewModel::changeQualityPreset,
+            onChangeStreamMode = viewModel::changeStreamMode,
             onChangeViewerQuality = viewModel::setViewerQuality
         )
     }

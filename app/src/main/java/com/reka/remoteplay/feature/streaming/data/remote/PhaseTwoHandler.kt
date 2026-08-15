@@ -53,6 +53,11 @@ class PhaseTwoHandler @Inject constructor(
 
     fun setQualityPreset(preset: QualityPreset) { _qualityPreset.value = preset }
 
+    private val _streamMode = MutableStateFlow("gaming")
+    val streamMode: StateFlow<String> = _streamMode.asStateFlow()
+
+    fun setStreamMode(mode: String) { _streamMode.value = mode }
+
     /** Native screen dimensions (landscape) used for dynamic quality recalculation */
     private val _screenWidth = MutableStateFlow(1920)
     val screenWidth: StateFlow<Int> = _screenWidth.asStateFlow()

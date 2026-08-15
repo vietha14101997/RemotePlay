@@ -1,8 +1,12 @@
 package com.reka.remoteplay.feature.streaming.presentation
 
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -16,8 +20,8 @@ import com.reka.remoteplay.feature.streaming.data.remote.CursorRenderer
  * Draws cursor overlay.
  *
  * (u,v) represents the precise mouse point / hotspot in normalized coordinates [0..1].
- * The bitmap is drawn offset by (-hotspotX * scale, -hotspotY * scale) so the pointer tip
- * always remains exactly at (u, v) across all cursor shape transitions.
+ * Uses high-stiffness spring animation to smooth out network packet jitter while
+ * maintaining instantaneous responsiveness without lag.
  */
 @Composable
 fun CursorOverlay(
@@ -29,14 +33,25 @@ fun CursorOverlay(
 ) {
     if (!cursorState.visible) return
 
+    val animatedU by animateFloatAsState(
+        targetValue = cursorState.u,
+        animationSpec = spring(stiffness = 3000f, dampingRatio = Spring.DampingRatioNoBouncy),
+        label = "cursorU"
+    )
+    val animatedV by animateFloatAsState(
+        targetValue = cursorState.v,
+        animationSpec = spring(stiffness = 3000f, dampingRatio = Spring.DampingRatioNoBouncy),
+        label = "cursorV"
+    )
+
     Canvas(modifier = modifier.fillMaxSize()) {
         val targetW = if (desktopWidth > 0) desktopWidth else 1920
         val targetH = if (desktopHeight > 0) desktopHeight else 1080
         val scaleX = size.width / targetW.toFloat()
         val scaleY = size.height / targetH.toFloat()
 
-        val cursorPointX = cursorState.u * size.width
-        val cursorPointY = cursorState.v * size.height
+        val cursorPointX = animatedU * size.width
+        val cursorPointY = animatedV * size.height
 
         if (cursorImage != null && !cursorImage.bitmap.isRecycled) {
             val dstW = (cursorImage.bitmap.width * scaleX).toInt().coerceAtLeast(1)

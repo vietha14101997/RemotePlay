@@ -122,6 +122,7 @@ fun ConfigReviewRoute(
     val savedWindowsScale by viewModel.savedWindowsScale.collectAsState()
     val bindMobileScreen by viewModel.bindMobileScreen.collectAsState()
     val qualityPreset by viewModel.qualityPreset.collectAsState()
+    val streamMode by viewModel.savedStreamMode.collectAsState()
 
     var isPaused by rememberSaveable { mutableStateOf(false) }
     val connectionType = remember { viewModel.getConnectionType() }
@@ -157,8 +158,10 @@ fun ConfigReviewRoute(
             bindMobileScreen = bindMobileScreen,
             deviceScreenSpecs = viewModel.deviceScreenSpecs,
             qualityPreset = qualityPreset,
+            streamMode = streamMode,
             onBindMobileScreenChanged = viewModel::setBindMobileScreen,
             onQualityPresetChanged = viewModel::setQualityPreset,
+            onStreamModeChanged = viewModel::setStreamMode,
             onProceed = { monitors, fps, windowsScale ->
                 navigated = false
                 isPaused = false

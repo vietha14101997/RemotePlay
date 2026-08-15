@@ -70,6 +70,7 @@ data class StreamingUiState(
     val availableFpsOptions: List<Int> = listOf(30, 60),
     val qualityPreset: com.reka.remoteplay.core.util.QualityPreset = com.reka.remoteplay.core.util.QualityPreset.Quality,
     val qualityPresetHeights: Map<com.reka.remoteplay.core.util.QualityPreset, Int> = emptyMap(),
+    val streamMode: String = "gaming",
     val isViewerMode: Boolean = false,
     val viewerQuality: String = "high"
 )
@@ -93,6 +94,7 @@ data class StreamingUiActions(
     val onReConfineCursor: () -> Unit = {},
     val onChangeFps: (Int) -> Unit = {},
     val onChangeQualityPreset: (com.reka.remoteplay.core.util.QualityPreset) -> Unit = {},
+    val onChangeStreamMode: (String) -> Unit = {},
     val onChangeViewerQuality: (String) -> Unit = {}
 )
 
@@ -430,6 +432,27 @@ fun StreamingScreen(
                                 }
                             }
                         } else {
+                            // Mode Switcher: Gaming vs Work
+                            Surface(shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    val isGaming = state.streamMode == "gaming"
+                                    val isWork = state.streamMode == "work" || state.streamMode == "efficiency"
+                                    QualityPresetButton(
+                                        label = "🎮 Gaming",
+                                        isActive = isGaming,
+                                        onClick = { actions.onChangeStreamMode("gaming"); showQualityPicker = false }
+                                    )
+                                    QualityPresetButton(
+                                        label = "💼 Work (Adaptive)",
+                                        isActive = isWork,
+                                        onClick = { actions.onChangeStreamMode("work"); showQualityPicker = false }
+                                    )
+                                }
+                            }
                             Surface(shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f)) {
                                 Row(
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),

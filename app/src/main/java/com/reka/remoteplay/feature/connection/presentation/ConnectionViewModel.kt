@@ -111,6 +111,9 @@ class ConnectionViewModel @Inject constructor(
     val savedQualityPreset = preferences.qualityPreset
         .stateIn(viewModelScope, SharingStarted.Eagerly, "Quality")
 
+    val savedStreamMode = preferences.streamMode
+        .stateIn(viewModelScope, SharingStarted.Eagerly, "gaming")
+
     /** Current quality preset as enum */
     val qualityPreset: StateFlow<QualityPreset>
         get() = savedQualityPreset.map { name ->
@@ -123,6 +126,10 @@ class ConnectionViewModel @Inject constructor(
 
     fun setQualityPreset(preset: QualityPreset) {
         viewModelScope.launch { preferences.saveQualityPreset(preset.name) }
+    }
+
+    fun setStreamMode(mode: String) {
+        viewModelScope.launch { preferences.saveStreamMode(mode) }
     }
 
     private val _hostInput = MutableStateFlow("")
@@ -433,7 +440,11 @@ class ConnectionViewModel @Inject constructor(
 
     fun proceed(monitors: Int, fps: Int, windowsScale: Int = 125) {
         val config = suggestedConfig.value ?: return
-        val preset = qualityPreset.value
+        val mode = savedStreamMode.value
+        val isWork = mode == "work" || mode == "efficiency"
+        val preset = if (isWork) QualityPreset.Balanced else qualityPreset.value
+        val targetBitrate = if (isWork) minOf(config.bitrateKbps, 3000) else config.bitrateKbps
+        val targetFps = if (isWork) 30 else fps
 
         val displayConfig: DisplayConfigMessage
         val streamFps: Int
@@ -442,7 +453,7 @@ class ConnectionViewModel @Inject constructor(
             // Bind Mobile mode: VDD refresh rate = phone max Hz, stream FPS = user-selected
             val specs = ScreenSpecDetector.detect(getApplication())
             val deviceHz = specs.refreshRate.roundToInt().coerceIn(30, 240)
-            streamFps = fps
+            streamFps = targetFps
 
             val landscapeW = maxOf(specs.widthPx, specs.heightPx)
             val landscapeH = minOf(specs.widthPx, specs.heightPx)
@@ -455,11 +466,12 @@ class ConnectionViewModel @Inject constructor(
                 monitors = 1,
                 resolution = ResolutionDto(width = alignedW, height = alignedH),
                 refreshRate = deviceHz,
-                bitrateKbps = config.bitrateKbps,
+                bitrateKbps = targetBitrate,
                 fps = streamFps,
                 monitorType = "bind_mobile",
                 isUsbMode = false,
-                windowsScale = windowsScale
+                windowsScale = windowsScale,
+                streamMode = mode
             )
 
             phaseTwoHandler.setScreenDimensions(landscapeW, landscapeH)
@@ -473,16 +485,17 @@ class ConnectionViewModel @Inject constructor(
                 sugW, sugH, preset, maxQH
             )
 
-            streamFps = fps
+            streamFps = targetFps
             displayConfig = DisplayConfigMessage(
                 monitors = monitors,
                 resolution = ResolutionDto(width = alignedW, height = alignedH),
-                refreshRate = fps,
-                bitrateKbps = config.bitrateKbps,
-                fps = fps,
+                refreshRate = targetFps,
+                bitrateKbps = targetBitrate,
+                fps = targetFps,
                 monitorType = "standard",
                 isUsbMode = false,
-                windowsScale = windowsScale
+                windowsScale = windowsScale,
+                streamMode = mode
             )
 
             phaseTwoHandler.setScreenDimensions(sugW, sugH)
@@ -506,6 +519,7 @@ class ConnectionViewModel @Inject constructor(
         phaseTwoHandler.setConfiguredFps(streamFps)
         phaseTwoHandler.setConfiguredCodec(config.selectedCodec)
         phaseTwoHandler.setQualityPreset(qualityPreset.value)
+        phaseTwoHandler.setStreamMode(mode)
 
         phaseOneHandler.sendProceed()
         phaseTwoHandler.startListening()
@@ -539,7 +553,6 @@ class ConnectionViewModel @Inject constructor(
     fun logout() {
         authRepository.logout()
     }
-
     // ==================== P5: ICE Restart on Network Change (first trigger) ====================
 
     private var connectivityManager: ConnectivityManager? = null

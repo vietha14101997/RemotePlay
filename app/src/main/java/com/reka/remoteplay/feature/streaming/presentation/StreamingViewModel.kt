@@ -10,6 +10,7 @@ import com.reka.remoteplay.core.util.EncoderResolutionCalculator
 import com.reka.remoteplay.core.util.QualityPreset
 import com.reka.remoteplay.core.network.MessageParser
 import com.reka.remoteplay.core.network.WebSocketClient
+import com.reka.remoteplay.feature.connection.data.local.ConnectionPreferences
 import com.reka.remoteplay.feature.connection.domain.model.ConnectionState
 import com.reka.remoteplay.feature.connection.domain.repository.ConnectionStateRepository
 import com.reka.remoteplay.feature.streaming.data.remote.*
@@ -31,7 +32,8 @@ class StreamingViewModel @Inject constructor(
     private val webSocketClient: WebSocketClient,
     private val cursorRenderer: CursorRenderer,
     private val externalInputHandler: ExternalInputHandler,
-    private val audioPlayer: AudioPlayer
+    private val audioPlayer: AudioPlayer,
+    private val preferences: ConnectionPreferences
 ) : AndroidViewModel(application) {
 
     val connectionState = connectionStateRepo.state
@@ -45,6 +47,10 @@ class StreamingViewModel @Inject constructor(
 
     private val _showUI = MutableStateFlow(false)
     val showUI: StateFlow<Boolean> = _showUI.asStateFlow()
+
+    // Stream Mode: Gaming vs Work
+    private val _streamMode = MutableStateFlow(phaseTwoHandler.streamMode.value)
+    val streamMode: StateFlow<String> = _streamMode.asStateFlow()
 
     // Viewer quality preset — controls server-side frame skip
     private val _viewerQuality = MutableStateFlow("high") // "high", "medium", "low"
@@ -255,6 +261,20 @@ class StreamingViewModel @Inject constructor(
             screenWidth = screenW,
             screenHeight = screenH,
         )
+        webSocketClient.sendText(MessageParser.serialize(msg))
+    }
+
+    fun changeStreamMode(mode: String) {
+        _streamMode.value = mode
+        phaseTwoHandler.setStreamMode(mode)
+        viewModelScope.launch { preferences.saveStreamMode(mode) }
+        val isWork = mode == "work" || mode == "efficiency"
+        val fps = if (isWork && _streamFps.value > 30) 30 else null
+        if (fps != null) {
+            _streamFps.value = fps
+            phaseTwoHandler.setConfiguredFps(fps)
+        }
+        val msg = UpdateConfigMessage(streamMode = mode, fps = fps)
         webSocketClient.sendText(MessageParser.serialize(msg))
     }
 
