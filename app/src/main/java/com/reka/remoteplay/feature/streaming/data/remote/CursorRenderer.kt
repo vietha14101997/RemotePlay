@@ -73,7 +73,8 @@ class CursorRenderer @Inject constructor() {
         posCount++
         _cursorState.value = CursorState(
             monitorIndex = monitorIndex,
-            u = u, v = v,
+            u = u,
+            v = v,
             visible = visible,
             cursorType = cursorType,
             cursorId = cursorId
@@ -100,7 +101,8 @@ class CursorRenderer @Inject constructor() {
 
         _cursorState.value = CursorState(
             monitorIndex = monitorIndex,
-            u = u, v = v,
+            u = u,
+            v = v,
             visible = visible,
             cursorType = cursorType,
             cursorId = cursorId
@@ -111,7 +113,6 @@ class CursorRenderer @Inject constructor() {
         if (cached != null) {
             _cursorImage.value = cached
         }
-        // If no match, keep previous _cursorImage (better than showing nothing)
     }
 
     /**

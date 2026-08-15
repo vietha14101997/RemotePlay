@@ -86,7 +86,7 @@ data class StreamingUiActions(
     val onToggleKeyboard: () -> Unit = {},
     val onSendKey: (Int, Boolean) -> Unit = { _, _ -> },
     val onSendText: (String) -> Unit = {},
-    val onSendMouseMove: (Short, Short) -> Unit = { _, _ -> },
+    val onSendMouseMove: (Float, Float) -> Unit = { _, _ -> },
     val onSendMouseButton: (Byte, Boolean) -> Unit = { _, _ -> },
     val onSendMouseWheel: (Short, Short) -> Unit = { _, _ -> },
     val onSetDragging: (Boolean) -> Unit = {},
@@ -559,113 +559,110 @@ private fun VideoSurface(onSurfaceCreated: (Surface) -> Unit, onSurfaceDestroyed
 
 @Composable
 private fun TouchpadLayer(
-    onSendMouseMove: (Short, Short) -> Unit,
+    onSendMouseMove: (Float, Float) -> Unit,
     onSendMouseButton: (Byte, Boolean) -> Unit,
     onSendMouseWheel: (Short, Short) -> Unit,
     onSetDragging: (Boolean) -> Unit,
     onReConfineCursor: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var isScrolling by remember { mutableStateOf(false) }
-
     Box(
         modifier = modifier
+            .fillMaxSize()
             .pointerInput(Unit) {
-                val slop = viewConfiguration.touchSlop
+                val tapSlop = viewConfiguration.touchSlop * 0.8f
+                val tapTimeoutMs = 220L
+                val doubleTapTimeoutMs = 300L
+                val scrollThreshold = 8f
+
+                var lastTapUpTime = 0L
+                var isDoubleTapDragging = false
+
                 awaitEachGesture {
-                    awaitFirstDown(requireUnconsumed = false)
-                    val secondDown = withTimeoutOrNull(150) {
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            if (event.changes.count { it.pressed } >= 2) return@withTimeoutOrNull true
-                        }
+                    val downEvent = awaitFirstDown(requireUnconsumed = false)
+                    val downTime = System.currentTimeMillis()
+                    var totalMovement = 0f
+                    var isMultiTouch = false
+
+                    val timeSinceLastTap = downTime - lastTapUpTime
+                    if (timeSinceLastTap < doubleTapTimeoutMs) {
+                        isDoubleTapDragging = true
+                        onSetDragging(true)
+                        onSendMouseButton(0, true)
                     }
-                    if (secondDown != true) return@awaitEachGesture
-                    isScrolling = true
-                    var accumY = 0f; var accumX = 0f; var totalMoved = 0f; val scrollThreshold = 8f
+
+                    var accumScrollY = 0f
+                    var accumScrollX = 0f
+
                     while (true) {
                         val event = awaitPointerEvent()
-                        val pressed = event.changes.filter { it.pressed }
-                        if (pressed.isEmpty()) { isScrolling = false; break }
-                        var avgDy = 0f; var avgDx = 0f
-                        pressed.forEach { p -> avgDy += p.position.y - p.previousPosition.y; avgDx += p.position.x - p.previousPosition.x; p.consume() }
-                        avgDy /= pressed.size; avgDx /= pressed.size
-                        totalMoved += kotlin.math.abs(avgDx) + kotlin.math.abs(avgDy)
-                        accumY += avgDy; accumX += avgDx
-                        val scrollY = (accumY / scrollThreshold).toInt(); val scrollX = (accumX / scrollThreshold).toInt()
-                        if (scrollY != 0) { onSendMouseWheel((scrollY * 40).toShort(), 0); accumY -= scrollY * scrollThreshold }
-                        if (scrollX != 0) { onSendMouseWheel(0, (-(scrollX * 40)).toShort()); accumX -= scrollX * scrollThreshold }
-                    }
-                    if (totalMoved < slop * 2) { onSendMouseButton(1.toByte(), true); onSendMouseButton(1.toByte(), false) }
-                }
-            }
-            .pointerInput(isScrolling) {
-                val longPressMs = viewConfiguration.longPressTimeoutMillis
-                val doubleTapMs = viewConfiguration.doubleTapTimeoutMillis
-                val touchSlop = viewConfiguration.touchSlop
-                awaitPointerEventScope {
-                    while (true) {
-                        awaitFirstDown(requireUnconsumed = false)
-                        if (isScrolling) {
-                            while (true) { val e = awaitPointerEvent(); if (e.changes.none { it.pressed }) break }
-                            continue
-                        }
-                        var isDrag = false; var isDoubleTapDrag = false
-                        val upOrDrag = withTimeoutOrNull(longPressMs) {
-                            var totalDx = 0f; var totalDy = 0f
-                            while (true) {
-                                val event = awaitPointerEvent(); val pointer = event.changes.firstOrNull() ?: continue
-                                if (!pointer.pressed) { pointer.consume(); return@withTimeoutOrNull "up" }
-                                val dx = pointer.position.x - pointer.previousPosition.x; val dy = pointer.position.y - pointer.previousPosition.y
-                                totalDx += dx; totalDy += dy
-                                if (totalDx * totalDx + totalDy * totalDy > touchSlop * touchSlop) { isDrag = true; pointer.consume(); return@withTimeoutOrNull "drag" }
+                        val activePointers = event.changes.filter { it.pressed }
+                        val pointerCount = activePointers.size
+
+                        if (pointerCount == 0) {
+                            val totalDuration = System.currentTimeMillis() - downTime
+                            if (isDoubleTapDragging) {
+                                onSendMouseButton(0, false)
+                                onSetDragging(false)
+                                onReConfineCursor()
+                                isDoubleTapDragging = false
+                                lastTapUpTime = 0L
+                            } else if (!isMultiTouch && totalMovement < tapSlop && totalDuration < tapTimeoutMs) {
+                                onSendMouseButton(0, true)
+                                onSendMouseButton(0, false)
+                                lastTapUpTime = System.currentTimeMillis()
+                            } else if (isMultiTouch && totalMovement < tapSlop * 2 && totalDuration < tapTimeoutMs) {
+                                onSendMouseButton(1, true)
+                                onSendMouseButton(1, false)
+                                lastTapUpTime = 0L
+                            } else {
+                                lastTapUpTime = 0L
                             }
+                            break
                         }
-                        when (upOrDrag) {
-                            null -> {
-                                while (true) {
-                                    val event = awaitPointerEvent(); val pointer = event.changes.firstOrNull() ?: break
-                                    if (!pointer.pressed) break
-                                    val dx = pointer.position.x - pointer.previousPosition.x; val dy = pointer.position.y - pointer.previousPosition.y
-                                    if (dx != 0f || dy != 0f) { onSendMouseMove(dx.toInt().toShort(), dy.toInt().toShort()) }
-                                    pointer.consume()
-                                }
+
+                        if (pointerCount >= 2) {
+                            isMultiTouch = true
+                            if (isDoubleTapDragging) {
+                                onSendMouseButton(0, false)
+                                onSetDragging(false)
+                                isDoubleTapDragging = false
                             }
-                            "up" -> {
-                                val secondDown = withTimeoutOrNull(doubleTapMs) { awaitFirstDown(requireUnconsumed = false) }
-                                if (secondDown == null) { onSendMouseButton(0, true); onSendMouseButton(0, false) }
-                                else {
-                                    val secondResult = withTimeoutOrNull(longPressMs) {
-                                        var totalDx = 0f; var totalDy = 0f
-                                        while (true) {
-                                            val event = awaitPointerEvent(); val pointer = event.changes.firstOrNull() ?: continue
-                                            if (!pointer.pressed) { pointer.consume(); return@withTimeoutOrNull "up" }
-                                            val dx = pointer.position.x - pointer.previousPosition.x; val dy = pointer.position.y - pointer.previousPosition.y
-                                            totalDx += dx; totalDy += dy
-                                            if (totalDx * totalDx + totalDy * totalDy > touchSlop * touchSlop) { pointer.consume(); return@withTimeoutOrNull "drag" }
-                                        }
-                                    }
-                                    when (secondResult) {
-                                        "up", null -> { onSendMouseButton(0, true); onSendMouseButton(0, false); onSendMouseButton(0, true); onSendMouseButton(0, false) }
-                                        "drag" -> { isDoubleTapDrag = true; onSetDragging(true); onSendMouseButton(0, true) }
-                                    }
-                                }
+
+                            var avgDx = 0f
+                            var avgDy = 0f
+                            for (p in activePointers) {
+                                avgDx += p.position.x - p.previousPosition.x
+                                avgDy += p.position.y - p.previousPosition.y
+                                p.consume()
                             }
-                            "drag" -> { isDrag = true }
-                        }
-                        if (isDrag || isDoubleTapDrag) {
-                            var accumX = 0f; var accumY = 0f
-                            while (true) {
-                                val event = awaitPointerEvent(); val pointer = event.changes.firstOrNull() ?: continue
-                                if (!pointer.pressed) {
-                                    pointer.consume()
-                                    if (isDoubleTapDrag) { onSendMouseButton(0, false); onSetDragging(false); onReConfineCursor() }
-                                    break
-                                }
-                                accumX += pointer.position.x - pointer.previousPosition.x; accumY += pointer.position.y - pointer.previousPosition.y
-                                val dx = accumX.toInt(); val dy = accumY.toInt()
-                                if (dx != 0 || dy != 0) { onSendMouseMove(dx.toShort(), dy.toShort()); accumX -= dx; accumY -= dy }
-                                pointer.consume()
+                            avgDx /= pointerCount
+                            avgDy /= pointerCount
+                            totalMovement += kotlin.math.abs(avgDx) + kotlin.math.abs(avgDy)
+
+                            accumScrollY += avgDy
+                            accumScrollX += avgDx
+
+                            val scrollStepsY = (accumScrollY / scrollThreshold).toInt()
+                            val scrollStepsX = (accumScrollX / scrollThreshold).toInt()
+
+                            if (scrollStepsY != 0) {
+                                onSendMouseWheel((scrollStepsY * 40).toShort(), 0)
+                                accumScrollY -= scrollStepsY * scrollThreshold
+                            }
+                            if (scrollStepsX != 0) {
+                                onSendMouseWheel(0, (-(scrollStepsX * 40)).toShort())
+                                accumScrollX -= scrollStepsX * scrollThreshold
+                            }
+                        } else if (pointerCount == 1 && !isMultiTouch) {
+                            val pointer = activePointers[0]
+                            val dx = pointer.position.x - pointer.previousPosition.x
+                            val dy = pointer.position.y - pointer.previousPosition.y
+                            pointer.consume()
+
+                            totalMovement += kotlin.math.sqrt(dx * dx + dy * dy)
+                            if (dx != 0f || dy != 0f) {
+                                onSendMouseMove(dx, dy)
                             }
                         }
                     }

@@ -130,11 +130,14 @@ class StreamingViewModel @Inject constructor(
             }
         }
 
+        val connectStartTime = System.currentTimeMillis()
         viewModelScope.launch {
             webSocketClient.textMessages.collect { text ->
                 when (val msg = MessageParser.parseServerMessage(text)) {
                     is ForegroundMonitorMessage -> {
-                        if (msg.monitorIndex != videoDecoderManager.activeMonitor.value) {
+                        // Prevent initial auto-switch race condition right at startup (first 3.5s)
+                        if (System.currentTimeMillis() - connectStartTime > 3500L &&
+                            msg.monitorIndex != videoDecoderManager.activeMonitor.value) {
                             switchMonitor(msg.monitorIndex)
                         }
                     }
@@ -177,7 +180,6 @@ class StreamingViewModel @Inject constructor(
                         webSocketClient.sendText(MessageParser.serialize(PauseMonitorMessage(monitorIndex = index)))
                     }
                 }
-
                 // Allow ICE to stabilise before injecting focus + cursor warp
                 delay(FOCUS_WARP_DELAY_MS)
                 webRtcManager.sendInput(InputProtocol.encodeFocusMonitor(0))
@@ -225,6 +227,8 @@ class StreamingViewModel @Inject constructor(
     val showKeyboard: StateFlow<Boolean> = _showKeyboard.asStateFlow()
 
     private var mouseSensitivity = 1.0f
+    private var subpixelX = 0f
+    private var subpixelY = 0f
 
     fun setMouseSensitivity(sensitivity: Float) {
         mouseSensitivity = sensitivity
@@ -264,10 +268,23 @@ class StreamingViewModel @Inject constructor(
         webRtcManager.sendInput(InputProtocol.encodeKey(vk.toShort(), down))
     }
 
+    fun sendMouseMove(dx: Float, dy: Float) {
+        val scaledDx = dx * mouseSensitivity
+        val scaledDy = dy * mouseSensitivity
+
+        subpixelX += scaledDx
+        subpixelY += scaledDy
+        val sendX = subpixelX.toInt()
+        val sendY = subpixelY.toInt()
+        if (sendX != 0 || sendY != 0) {
+            subpixelX -= sendX
+            subpixelY -= sendY
+            webRtcManager.sendInput(InputProtocol.encodeMouseMove(sendX.toShort(), sendY.toShort()))
+        }
+    }
+
     fun sendMouseMove(dx: Short, dy: Short) {
-        val scaledDx = (dx * mouseSensitivity).toInt().toShort()
-        val scaledDy = (dy * mouseSensitivity).toInt().toShort()
-        webRtcManager.sendInput(InputProtocol.encodeMouseMove(scaledDx, scaledDy))
+        sendMouseMove(dx.toFloat(), dy.toFloat())
     }
 
     fun sendMouseButton(button: Byte, down: Boolean) {

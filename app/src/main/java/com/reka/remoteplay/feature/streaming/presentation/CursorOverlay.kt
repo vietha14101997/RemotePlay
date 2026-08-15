@@ -15,9 +15,9 @@ import com.reka.remoteplay.feature.streaming.data.remote.CursorRenderer
 /**
  * Draws cursor overlay.
  *
- * Server sends (u,v) = cursor top-left position / monitor size (from DXGI Position).
- * This is the TOP-LEFT of the cursor bitmap, NOT the hotspot.
- * So we draw the bitmap directly at (u*w, v*h) without any hotspot offset.
+ * (u,v) represents the precise mouse point / hotspot in normalized coordinates [0..1].
+ * The bitmap is drawn offset by (-hotspotX * scale, -hotspotY * scale) so the pointer tip
+ * always remains exactly at (u, v) across all cursor shape transitions.
  */
 @Composable
 fun CursorOverlay(
@@ -30,26 +30,30 @@ fun CursorOverlay(
     if (!cursorState.visible) return
 
     Canvas(modifier = modifier.fillMaxSize()) {
-        // (u,v) = cursor bitmap top-left in normalized monitor coordinates
-        val x = cursorState.u * size.width
-        val y = cursorState.v * size.height
+        val targetW = if (desktopWidth > 0) desktopWidth else 1920
+        val targetH = if (desktopHeight > 0) desktopHeight else 1080
+        val scaleX = size.width / targetW.toFloat()
+        val scaleY = size.height / targetH.toFloat()
+
+        val cursorPointX = cursorState.u * size.width
+        val cursorPointY = cursorState.v * size.height
 
         if (cursorImage != null && !cursorImage.bitmap.isRecycled) {
-            // Scale cursor bitmap to match canvas-to-desktop ratio
-            val scaleX = size.width / desktopWidth
-            val scaleY = size.height / desktopHeight
             val dstW = (cursorImage.bitmap.width * scaleX).toInt().coerceAtLeast(1)
             val dstH = (cursorImage.bitmap.height * scaleY).toInt().coerceAtLeast(1)
 
-            // Draw at (x,y) directly — server already sends top-left position
+            // Offset top-left so hotspot aligns precisely with cursorPoint
+            val drawX = cursorPointX - (cursorImage.hotspotX * scaleX)
+            val drawY = cursorPointY - (cursorImage.hotspotY * scaleY)
+
             drawImage(
                 image = cursorImage.bitmap.asImageBitmap(),
-                dstOffset = IntOffset(x.toInt(), y.toInt()),
+                dstOffset = IntOffset(drawX.toInt(), drawY.toInt()),
                 dstSize = IntSize(dstW, dstH)
             )
         } else {
-            drawCircle(Color.White, 4f, center = Offset(x, y))
-            drawCircle(Color.Black, 4f, center = Offset(x, y), style = Stroke(1.5f))
+            drawCircle(Color.White, 4f, center = Offset(cursorPointX, cursorPointY))
+            drawCircle(Color.Black, 4f, center = Offset(cursorPointX, cursorPointY), style = Stroke(1.5f))
         }
     }
 }

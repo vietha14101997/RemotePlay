@@ -39,6 +39,8 @@ class ExternalInputHandler @Inject constructor(
     }
 
     // ===== Mouse =====
+    private var mouseSubpixelX = 0f
+    private var mouseSubpixelY = 0f
 
     fun onGenericMotionEvent(event: MotionEvent): Boolean {
         if (!enabled) return false
@@ -54,8 +56,14 @@ class ExternalInputHandler @Inject constructor(
             MotionEvent.ACTION_HOVER_MOVE, MotionEvent.ACTION_MOVE -> {
                 val dx = event.getAxisValue(MotionEvent.AXIS_RELATIVE_X)
                 val dy = event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y)
-                if (dx != 0f || dy != 0f) {
-                    send(InputProtocol.encodeMouseMove(dx.toInt().toShort(), dy.toInt().toShort()))
+                mouseSubpixelX += dx
+                mouseSubpixelY += dy
+                val sendX = mouseSubpixelX.toInt()
+                val sendY = mouseSubpixelY.toInt()
+                if (sendX != 0 || sendY != 0) {
+                    mouseSubpixelX -= sendX
+                    mouseSubpixelY -= sendY
+                    send(InputProtocol.encodeMouseMove(sendX.toShort(), sendY.toShort()))
                 }
                 return true
             }

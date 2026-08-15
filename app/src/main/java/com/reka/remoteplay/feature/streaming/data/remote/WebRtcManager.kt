@@ -43,6 +43,7 @@ class WebRtcManager @Inject constructor(
     // Multiple STUN providers for ISP-blocking redundancy: Google + Cloudflare + Nextcloud.
     // TURN servers can be added via setIceServers() when needed (4G fallback).
     private val defaultStunServers: List<PeerConnection.IceServer> = listOf(
+        PeerConnection.IceServer.builder("stun:relay.hoangha.me:3478").createIceServer(),
         PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
         PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer(),
         PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer(),
