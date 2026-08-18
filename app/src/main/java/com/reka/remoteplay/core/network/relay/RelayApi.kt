@@ -34,6 +34,10 @@ interface RelayApi {
     @GET("ice-servers-public")
     suspend fun getIceServersPublic(): Response<IceServersResponse>
 
+    /** WAN P2P telemetry snapshot contract v1: fire-and-forget, no auth, no PII. */
+    @POST("telemetry/connection")
+    suspend fun reportConnectionTelemetry(@Body request: ConnectionTelemetryRequest): Response<Unit>
+
     @POST("rooms/join")
     suspend fun joinRoom(
         @Body request: RoomJoinRequest,

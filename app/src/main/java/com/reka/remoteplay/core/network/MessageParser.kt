@@ -12,11 +12,20 @@ object MessageParser {
     private val mapAdapter = moshi.adapter(Map::class.java)
 
     fun getMessageType(rawJson: String): String? {
+        // Fast path: skip JSON parsing for plain-text control frames minted by the server
+        // (ping, pong:N, etc.) — they will trip Moshi otherwise and spam a JsonEncodingException
+        // ~1/2s. The protocol layer treats these as unstructured control frames, never JSON.
+        if (rawJson.isEmpty() || rawJson[0] != '{') return null
         return try {
             @Suppress("UNCHECKED_CAST")
             val map = mapAdapter.fromJson(rawJson) as? Map<String, Any?>
-            map?.get("type") as? String
-        } catch (_: Exception) {
+            val type = map?.get("type") as? String
+            if (type == null) {
+                android.util.Log.w("MessageParser", "Unknown message type in: $rawJson")
+            }
+            type
+        } catch (e: Exception) {
+            android.util.Log.e("MessageParser", "Error getting message type: ${e.message}", e)
             null
         }
     }
@@ -24,7 +33,8 @@ object MessageParser {
     inline fun <reified T> parse(rawJson: String): T? {
         return try {
             moshi.adapter(T::class.java).fromJson(rawJson)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            android.util.Log.e("MessageParser", "Error parsing ${T::class.java.simpleName}: ${e.message}\nJSON: $rawJson", e)
             null
         }
     }
@@ -53,6 +63,13 @@ object MessageParser {
             "video_offer" -> parse<VideoOfferMessage>(rawJson)
             "audio_offer" -> parse<AudioOfferMessage>(rawJson)
             "reconnect_request" -> parse<ReconnectRequestMessage>(rawJson)
+            // Pairing (Phase 1 security)
+            "pairing_host_proof" -> parse<PairingHostProofMessage>(rawJson)
+            "pairing_failed" -> parse<PairingFailedMessage>(rawJson)
+            "pairing_required" -> parse<PairingRequiredMessage>(rawJson)
+            // Phase 5: ICE restart on network change
+            "ice_restart_answer" -> parse<IceRestartAnswerMessage>(rawJson)
+            "request_ice_restart" -> parse<RequestIceRestartMessage>(rawJson)
             // Phase 3
             "streaming_started" -> parse<StreamingStartedMessage>(rawJson)
             "config_updated" -> parse<ConfigUpdatedMessage>(rawJson)

@@ -2,6 +2,7 @@ package com.reka.remoteplay.feature.connection.presentation
 
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -23,10 +24,10 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import com.reka.remoteplay.R
 import com.reka.remoteplay.ui.theme.*
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.reka.remoteplay.core.model.HardwareInfoMessage
-import com.reka.remoteplay.core.model.SuggestedConfigMessage
+import com.reka.remoteplay.core.model.*
 import com.reka.remoteplay.core.util.ScreenSpecs
 import com.reka.remoteplay.core.util.EncoderResolutionCalculator
 import com.reka.remoteplay.core.util.QualityPreset
@@ -47,9 +48,11 @@ fun ConfigReviewScreen(
     bindMobileScreen: Boolean = false,
     deviceScreenSpecs: ScreenSpecs = ScreenSpecs(1920, 1080, 60f),
     qualityPreset: QualityPreset = QualityPreset.Quality,
+    streamMode: String = "gaming",
     webRtcConnectionType: String = "unknown",
     onBindMobileScreenChanged: (Boolean) -> Unit = {},
     onQualityPresetChanged: (QualityPreset) -> Unit = {},
+    onStreamModeChanged: (String) -> Unit = {},
     onProceed: (monitors: Int, fps: Int, windowsScale: Int) -> Unit,
     onResume: () -> Unit = {},
     onBack: () -> Unit
@@ -109,14 +112,33 @@ fun ConfigReviewScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .statusBarsPadding()
                 .verticalScroll(rememberScrollState())
-                .padding(20.dp)
+                .padding(horizontal = 20.dp)
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.back), tint = AppTextTertiary)
+            Box(
+                modifier = Modifier.fillMaxWidth(),
+                contentAlignment = Alignment.Center
+            ) {
+                IconButton(
+                    onClick = onBack,
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .offset(x = (-12).dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = stringResource(R.string.back),
+                        tint = Color.White
+                    )
                 }
-                Text(stringResource(R.string.stream_configuration), fontSize = 20.sp, fontWeight = FontWeight.Bold, color = AppTextPrimary)
+                Text(
+                    text = stringResource(R.string.stream_configuration),
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = AppTextPrimary,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
             }
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -171,6 +193,73 @@ fun ConfigReviewScreen(
 
             Spacer(modifier = Modifier.height(20.dp))
 
+            // Mode Selector: Gaming vs Work
+            val isGaming = streamMode == "gaming"
+            val isWork = streamMode == "work" || streamMode == "efficiency"
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = AppSurface)
+            ) {
+                Column(modifier = Modifier.padding(20.dp)) {
+                    Text("Streaming Mode", fontWeight = FontWeight.SemiBold, color = AppTextPrimary, fontSize = 16.sp)
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        // Gaming Mode Card
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (isGaming) AppAccent.copy(alpha = 0.15f) else AppSurface,
+                            border = if (isGaming) BorderStroke(1.5.dp, AppAccent) else BorderStroke(1.dp, AppBorder),
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable(enabled = settingsEnabled) {
+                                    onStreamModeChanged("gaming")
+                                }
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text("🎮", fontSize = 18.sp)
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Gaming", fontWeight = FontWeight.Bold, color = if (isGaming) AppAccent else AppTextPrimary, fontSize = 15.sp)
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text("60 FPS • Low latency\nHigh motion gaming", color = AppTextSecondary, fontSize = 11.sp, lineHeight = 14.sp)
+                            }
+                        }
+
+                        // Work Mode Card
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (isWork) AppAccent.copy(alpha = 0.15f) else AppSurface,
+                            border = if (isWork) BorderStroke(1.5.dp, AppAccent) else BorderStroke(1.dp, AppBorder),
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable(enabled = settingsEnabled) {
+                                    onStreamModeChanged("work")
+                                    if (selectedFps > 30) selectedFps = 30
+                                }
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text("💼", fontSize = 18.sp)
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Work Mode", fontWeight = FontWeight.Bold, color = if (isWork) AppAccent else AppTextPrimary, fontSize = 15.sp)
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text("Adaptive 15-30 FPS\nSaves 95% data • Crisp text", color = AppTextSecondary, fontSize = 11.sp, lineHeight = 14.sp)
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
@@ -214,24 +303,37 @@ fun ConfigReviewScreen(
 
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    Text("Quality Preset", color = AppTextTertiary, fontSize = 13.sp)
+                    val presetEnabled = settingsEnabled && !isWork
+                    val fpsEnabled = settingsEnabled && !isWork
+
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Quality Preset", color = AppTextTertiary, fontSize = 13.sp)
+                        if (isWork) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("(🔒 Khóa 1080p cho Work Mode)", color = AppAccent, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                        }
+                    }
                     Spacer(modifier = Modifier.height(4.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         QualityPreset.entries.forEach { preset ->
-                            val isSelected = qualityPreset == preset
+                            val isSelected = if (isWork) preset == QualityPreset.Balanced else qualityPreset == preset
                             Surface(
                                 shape = RoundedCornerShape(8.dp),
-                                color = if (isSelected) AppAccent.copy(alpha = 0.2f) else Color.Transparent,
+                                color = if (isSelected) AppAccent.copy(alpha = if (isWork) 0.15f else 0.2f) else Color.Transparent,
                                 modifier = Modifier
                                     .weight(1f)
-                                    .clickable(enabled = settingsEnabled) { onQualityPresetChanged(preset) }
+                                    .clickable(enabled = presetEnabled) { onQualityPresetChanged(preset) }
                             ) {
                                 Text(
                                     text = preset.displayName,
-                                    color = if (isSelected) AppAccent else AppTextTertiary,
+                                    color = when {
+                                        isSelected -> AppAccent
+                                        isWork -> AppTextQuaternary
+                                        else -> AppTextTertiary
+                                    },
                                     fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
                                     fontSize = 14.sp,
                                     modifier = Modifier.padding(vertical = 10.dp),
@@ -241,17 +343,18 @@ fun ConfigReviewScreen(
                         }
                     }
 
+                    val effectivePreset = if (isWork) QualityPreset.Balanced else qualityPreset
                     val previewW: Int
                     val previewH: Int
                     if (bindMobileScreen) {
                         val landscapeW = maxOf(deviceScreenSpecs.widthPx, deviceScreenSpecs.heightPx)
                         val landscapeH = minOf(deviceScreenSpecs.widthPx, deviceScreenSpecs.heightPx)
-                        val (w, h) = EncoderResolutionCalculator.calculate(landscapeW, landscapeH, qualityPreset, serverInfo.maxQualityHeight)
+                        val (w, h) = EncoderResolutionCalculator.calculate(landscapeW, landscapeH, effectivePreset, serverInfo.maxQualityHeight)
                         previewW = w; previewH = h
                     } else {
                         val sugW = suggestedConfig.resolution.width
                         val sugH = suggestedConfig.resolution.height
-                        val (w, h) = EncoderResolutionCalculator.calculate(sugW, sugH, qualityPreset, serverInfo.maxQualityHeight)
+                        val (w, h) = EncoderResolutionCalculator.calculate(sugW, sugH, effectivePreset, serverInfo.maxQualityHeight)
                         previewW = w; previewH = h
                     }
                     Spacer(modifier = Modifier.height(6.dp))
@@ -318,24 +421,34 @@ fun ConfigReviewScreen(
 
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    Text(stringResource(R.string.frame_rate), color = AppTextTertiary, fontSize = 13.sp)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(stringResource(R.string.frame_rate), color = AppTextTertiary, fontSize = 13.sp)
+                        if (isWork) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("(🔒 Adaptive 15 - 30 FPS)", color = AppAccent, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                        }
+                    }
                     Spacer(modifier = Modifier.height(4.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         availableFpsOptions.forEach { fps ->
-                            val isSelected = selectedFps == fps
+                            val isSelected = if (isWork) fps == 30 else selectedFps == fps
                             Surface(
                                 shape = RoundedCornerShape(8.dp),
-                                color = if (isSelected) AppAccent.copy(alpha = 0.2f) else Color.Transparent,
+                                color = if (isSelected) AppAccent.copy(alpha = if (isWork) 0.15f else 0.2f) else Color.Transparent,
                                 modifier = Modifier
                                     .weight(1f)
-                                    .clickable(enabled = settingsEnabled) { selectedFps = fps }
+                                    .clickable(enabled = fpsEnabled) { selectedFps = fps }
                             ) {
                                 Text(
                                     text = "$fps",
-                                    color = if (isSelected) AppAccent else AppTextTertiary,
+                                    color = when {
+                                        isSelected -> AppAccent
+                                        isWork -> AppTextQuaternary
+                                        else -> AppTextTertiary
+                                    },
                                     fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
                                     fontSize = 14.sp,
                                     modifier = Modifier.padding(vertical = 10.dp),
@@ -473,5 +586,35 @@ private fun InfoCard(
                 }
             }
         }
+    }
+}
+
+@Preview(name = "Config Review", showBackground = true)
+@Composable
+private fun ConfigReviewScreenPreview() {
+    RemotePlayTheme {
+        ConfigReviewScreen(
+            serverInfo = HardwareInfoMessage(
+                device = DeviceInfo(
+                    name = "Gaming-PC",
+                    gpu = "NVIDIA RTX 4080",
+                    gpuVramGB = 16,
+                    processor = "Intel i9-13900K"
+                ),
+                encoder = EncoderInfo(type = "NVENC", hwAccel = true),
+                monitors = listOf(MonitorInfoDto(0, "Display 1", 1920, 1080)),
+                maxQualityHeight = 2160
+            ),
+            suggestedConfig = SuggestedConfigMessage(
+                resolution = ResolutionDto(1920, 1080),
+                refreshRate = 60,
+                bitrateKbps = 20000,
+                selectedCodec = "H264",
+                networkInfo = NetworkInfoDto(pingMs = 15.0, bandwidthMbps = 100.0, jitterMs = 2.0)
+            ),
+            connectionType = "Wi-Fi",
+            onProceed = { _, _, _ -> },
+            onBack = {}
+        )
     }
 }

@@ -1,5 +1,6 @@
 package com.reka.remoteplay.core.model
 
+import com.reka.remoteplay.core.network.relay.IceServerConfig
 import com.squareup.moshi.Json
 import com.squareup.moshi.JsonClass
 
@@ -11,7 +12,11 @@ data class HardwareInfoMessage(
     @param:Json(name = "device") val device: DeviceInfo = DeviceInfo(),
     @param:Json(name = "encoder") val encoder: EncoderInfo = EncoderInfo(),
     @param:Json(name = "monitors") val monitors: List<MonitorInfoDto> = emptyList(),
-    @param:Json(name = "maxQualityHeight") val maxQualityHeight: Int = 1440
+    @param:Json(name = "maxQualityHeight") val maxQualityHeight: Int = 1440,
+    // P5 F8: host's active transport supports a live ICE restart (vs full restart_phase2
+    // teardown). Defaults to false so an older host that omits this field is treated as
+    // unsupported — client always falls back to restart_phase2 in that case.
+    @param:Json(name = "supportsIceRestart") val supportsIceRestart: Boolean = false
 )
 
 @JsonClass(generateAdapter = true)
@@ -60,7 +65,10 @@ data class ConfigProgressMessage(
 data class ConfigCompleteMessage(
     @param:Json(name = "type") val type: String = "config_complete",
     @param:Json(name = "monitors") val monitors: List<MonitorInfoDto> = emptyList(),
-    @param:Json(name = "captureReady") val captureReady: Boolean = false
+    @param:Json(name = "captureReady") val captureReady: Boolean = false,
+    // Optional STUN/TURN servers with ephemeral coturn credentials minted by the host.
+    // Lets TURN work over LAN/tunnel signaling without the client contacting the relay.
+    @param:Json(name = "iceServers") val iceServers: List<IceServerConfig>? = null
 )
 
 @JsonClass(generateAdapter = true)
@@ -101,6 +109,50 @@ data class ReconnectRequestMessage(
     @param:Json(name = "type") val type: String = "reconnect_request",
     @param:Json(name = "reason") val reason: String = "",
     @param:Json(name = "suggestedCodec") val suggestedCodec: String? = null
+)
+
+// ==================== Phase 5: ICE Restart on Network Change (Server -> Client) ====================
+
+/** Host's answer to our `ice_restart_offer`, applied on the SAME live main PeerConnection —
+ *  no teardown, just a fresh ICE ufrag/pwd + new candidate-pair selection. */
+@JsonClass(generateAdapter = true)
+data class IceRestartAnswerMessage(
+    @param:Json(name = "type") val type: String = "ice_restart_answer",
+    @param:Json(name = "sdp") val sdp: String = ""
+)
+
+/** Host-initiated third trigger: asks the client to initiate an ICE restart (host saw a path
+ *  change it can't detect from the client side). Android stays the offerer — this only tells
+ *  it WHEN to act, it never flips who sends the offer (glare avoidance). */
+@JsonClass(generateAdapter = true)
+data class RequestIceRestartMessage(
+    @param:Json(name = "type") val type: String = "request_ice_restart"
+)
+
+// ==================== Pairing (Phase 1 security): Server -> Client ====================
+
+/** Host's reply to a valid `pairing_client_proof` — `macH` = base64(HMAC-SHA256(psk,
+ *  "RS-PAIR-v1|H|sid|nonce|hostFp|clientFp")). `sas` is a 4-digit string for optional user compare. */
+@JsonClass(generateAdapter = true)
+data class PairingHostProofMessage(
+    @param:Json(name = "type") val type: String = "pairing_host_proof",
+    @param:Json(name = "macH") val macH: String = "",
+    @param:Json(name = "sas") val sas: String = ""
+)
+
+/** Any handshake failure (bad MAC / expired / replayed sid|nonce / missing fingerprint). Host
+ *  closes the PeerConnection right after sending this — client must not retry silently. */
+@JsonClass(generateAdapter = true)
+data class PairingFailedMessage(
+    @param:Json(name = "type") val type: String = "pairing_failed",
+    @param:Json(name = "reason") val reason: String = ""
+)
+
+/** Reconnect path: host doesn't recognize our (unpinned) client fingerprint and has no psk to
+ *  verify us with — we must present a fresh QR pairing (this session cannot proceed). */
+@JsonClass(generateAdapter = true)
+data class PairingRequiredMessage(
+    @param:Json(name = "type") val type: String = "pairing_required"
 )
 
 // ==================== Phase 3: Server -> Client ====================

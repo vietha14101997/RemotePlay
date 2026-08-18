@@ -18,20 +18,41 @@ class WebSocketClient @Inject constructor() {
         .pingInterval(0, TimeUnit.SECONDS) // We handle ping/pong ourselves
         .build()
 
-    private var webSocket: WebSocket? = null
-    private var pingJob: Job? = null
+    // @Volatile (A2): read/written across OkHttp callback threads, the IO reconnect
+    // coroutine, and caller threads; the stale-callback identity guards
+    // (webSocket !== this@WebSocketClient.webSocket) rely on cross-thread visibility.
+    @Volatile private var webSocket: WebSocket? = null
+    @Volatile private var pingJob: Job? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val lastPongTime = AtomicLong(0)
+    private val connectionGeneration = AtomicLong(0)
+
+    // --- Reconnect state (P2 signaling resilience) ---
+    /** URL used for the most recent [connectWithUrl] call; resent verbatim on every reconnect
+     *  attempt so the same `session`/auth query params reach the relay. */
+    private var lastConnectUrl: String? = null
+    /** True once [disconnect] has been called; suppresses auto-reconnect until the next
+     *  explicit connect*() call. Guards the reconnect scheduling decision, see [scheduleReconnect]. */
+    private var userInitiatedClose = false
+    /** The currently scheduled (delay + retry) reconnect coroutine, if any. Guarded by
+     *  [reconnectLock] so overlapping onClosed/onFailure/ping-timeout callbacks single-flight. */
+    private var reconnectJob: Job? = null
+    private val reconnectLock = Any()
+    private val reconnectPolicy = WebSocketReconnectPolicy()
+
+    private val _reconnectAttempt = MutableStateFlow(0)
+    /** 1-based reconnect attempt number while [connectionState] is RECONNECTING; 0 otherwise. */
+    val reconnectAttempt: StateFlow<Int> = _reconnectAttempt.asStateFlow()
 
     private val _textMessages = MutableSharedFlow<String>(
-        replay = 0,
+        replay = 16,
         extraBufferCapacity = 64,
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
     val textMessages: SharedFlow<String> = _textMessages.asSharedFlow()
 
     private val _binaryMessages = MutableSharedFlow<ByteArray>(
-        replay = 0,
+        replay = 8,
         extraBufferCapacity = 64,
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
@@ -51,7 +72,30 @@ class WebSocketClient @Inject constructor() {
     )
     val pongEvents: SharedFlow<Unit> = _pongEvents.asSharedFlow()
 
+    /**
+     * True when the current session goes through the relay server (room/guest/session
+     * paths) rather than direct LAN/tunnel signaling. Relay sessions are cross-network
+     * by definition, so the client requests single-PC mode (no per-track video PCs).
+     */
+    var isRelayTransport: Boolean = false
+
+    /**
+     * Direct sink for relay-media binary envelopes (0xF1..0xF5). Invoked synchronously
+     * on the OkHttp reader thread — same threading model as the P2P DataChannel
+     * observer. MUST bypass [binaryMessages]: that flow has replay=8 + DROP_OLDEST,
+     * which replays stale chunks to new collectors and silently drops chunks under
+     * load — either one corrupts the chunked H265 stream beyond recovery (a missing
+     * 60KB mid-frame chunk breaks the NAL and poisons every following P-frame).
+     */
+    @Volatile
+    var onRelayMediaBinary: ((ByteArray) -> Unit)? = null
+
+    /** Updated on the socket reader thread before the matching text message is published. */
+    @Volatile
+    var onRelayMediaModeChanged: ((Boolean) -> Unit)? = null
+
     fun connect(host: String, port: Int = 8288, token: String? = null, isUsb: Boolean = false) {
+        isRelayTransport = false
         val url = buildString {
             append("ws://")
             append(host)
@@ -80,6 +124,7 @@ class WebSocketClient @Inject constructor() {
      * Uses wss:// scheme since tunnel provides HTTPS.
      */
     fun connectTunnel(tunnelUrl: String, token: String? = null) {
+        isRelayTransport = false
         val url = buildString {
             append(normalizeWsUrl(tunnelUrl))
             append("/signal")
@@ -93,6 +138,7 @@ class WebSocketClient @Inject constructor() {
      * Uses WSS + JWT token for authentication.
      */
     fun connectRelay(relayUrl: String, sessionId: String, token: String) {
+        isRelayTransport = true
         val url = "${normalizeWsUrl(relayUrl)}/ws/client?session=$sessionId&token=$token"
         connectWithUrl(url)
     }
@@ -101,6 +147,7 @@ class WebSocketClient @Inject constructor() {
      * Connect via relay for guest session (no JWT token needed).
      */
     fun connectGuestRelay(relayUrl: String, sessionId: String) {
+        isRelayTransport = true
         val url = "${normalizeWsUrl(relayUrl)}/ws/guest?session=$sessionId"
         connectWithUrl(url)
     }
@@ -109,98 +156,303 @@ class WebSocketClient @Inject constructor() {
      * Connect to room via relay server.
      */
     fun connectRoom(relayUrl: String, roomId: String, clientId: String) {
+        isRelayTransport = true
         val url = "${normalizeWsUrl(relayUrl)}/ws/room?room_id=$roomId&client_id=$clientId"
         connectWithUrl(url)
     }
 
-    private fun connectWithUrl(url: String) {
-        pingJob?.cancel()
-        pingJob = null
-        webSocket?.close(1000, null)
-        webSocket = null
+    /**
+     * @param isReconnect true when this call originates from [scheduleReconnect] retrying the
+     *   same [lastConnectUrl] after a drop, rather than a fresh explicit connect*() call.
+     */
+    private fun connectWithUrl(
+        url: String,
+        isReconnect: Boolean = false,
+        reconnectFromGeneration: Long? = null
+    ) {
+        val oldSocket: WebSocket?
+        val generation: Long
+        synchronized(reconnectLock) {
+            // Cancellation alone cannot stop a reconnect coroutine that already resumed. Its
+            // source generation must still own the connection before it may create a new socket.
+            if (isReconnect &&
+                (userInitiatedClose || reconnectFromGeneration != connectionGeneration.get())
+            ) return
 
-        Log.d(TAG, "Connecting to $url")
-        _connectionState.value = WsConnectionState.CONNECTING
+            generation = connectionGeneration.incrementAndGet()
+            oldSocket = webSocket
+            webSocket = null
+            pingJob?.cancel()
+            pingJob = null
+
+            if (!isReconnect) {
+                lastConnectUrl = url
+                userInitiatedClose = false
+                reconnectJob?.cancel()
+                reconnectJob = null
+            }
+        }
+        oldSocket?.close(1000, null)
+
+        // Drop replayed messages from the previous connection: with replay > 0, a new
+        // collector would otherwise re-process the old session's handshake (observed:
+        // client re-sent hardware_info_ack into a not-yet-open socket, and the host
+        // hung forever at "Waiting for hardware_info_ack").
+        _textMessages.resetReplayCache()
+        _binaryMessages.resetReplayCache()
+
+        if (!isReconnect) {
+            reconnectPolicy.reset()
+            _reconnectAttempt.value = 0
+        }
+
+        Log.d(TAG, "Connecting to $url${if (isReconnect) " (reconnect attempt ${_reconnectAttempt.value})" else ""}")
+        _connectionState.value = if (isReconnect) WsConnectionState.RECONNECTING else WsConnectionState.CONNECTING
 
         val request = Request.Builder().url(url).build()
-        webSocket = client.newWebSocket(request, object : WebSocketListener() {
+        val relayGate = RelayMediaOrderGate()
+        val socket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                Log.d(TAG, "WebSocket connected")
-                _connectionState.value = WsConnectionState.CONNECTED
-                startPingLoop()
+                val relayModeSink: ((Boolean) -> Unit)?
+                synchronized(reconnectLock) {
+                    if (!claimCurrentSocket(generation, webSocket)) return
+                    Log.d(TAG, "WebSocket connected")
+                    reconnectJob?.cancel()
+                    reconnectJob = null
+                    reconnectPolicy.reset()
+                    _reconnectAttempt.value = 0
+                    _connectionState.value = WsConnectionState.CONNECTED
+                    relayModeSink = onRelayMediaModeChanged
+                    startPingLoop(generation, webSocket)
+                }
+                if (isCurrentSocket(generation, webSocket)) relayModeSink?.invoke(false)
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
+                val relayModeChange: Boolean?
+                val relayModeSink: ((Boolean) -> Unit)?
+                // Parse once and hoist outside the synchronized block so both receive and emit
+                // paths can use the same `HIGH_FREQ_WS_TYPES` filter without parsing twice.
+                val type = MessageParser.getMessageType(text)
+                synchronized(reconnectLock) {
+                    if (!claimCurrentSocket(generation, webSocket)) return
+                    // Any inbound frame proves the socket is alive. During relay-media, large video
+                    // messages can delay the application-level pong on this same ordered TCP stream.
+                    lastPongTime.set(System.currentTimeMillis())
+                    // Skip verbose log entirely for known high-frequency types — cursor_position
+                    // arrives at ~60Hz, frameTiming at 1Hz each still hundreds of bytes. Even a
+                    // 80-char truncated Log.v line keeps logcat scrolling.
+                    if (type !in HIGH_FREQ_WS_TYPES) {
+                        Log.v(TAG, "WS Message Received: ${text.take(80)}")
+                    }
+                    relayModeChange = relayGate.onText(text)
+                    relayModeSink = if (relayModeChange != null) onRelayMediaModeChanged else null
+                }
+
+                // OkHttp serializes callbacks for a socket, so invoking this before publication
+                // preserves relay start/stop ordering without holding the reconnect state lock.
+                if (relayModeChange != null && isCurrentSocket(generation, webSocket)) {
+                    relayModeSink?.invoke(relayModeChange)
+                }
+                if (!isCurrentSocket(generation, webSocket)) return
                 if (text == "ping" || text.startsWith("ping:")) {
                     val seq = text.removePrefix("ping:").takeIf { it != text }
-                    val pong = if (seq != null) "pong:$seq" else "pong"
-                    webSocket.send(pong)
+                    webSocket.send(if (seq != null) "pong:$seq" else "pong")
                     return
                 }
                 if (text == "pong" || text.startsWith("pong:")) {
-                    val sentTime = text.removePrefix("pong:").toLongOrNull()
-                    if (sentTime != null) {
-                        val rtt = System.currentTimeMillis() - sentTime
-                        _rttMs.value = rtt.toFloat()
+                    text.removePrefix("pong:").toLongOrNull()?.let { sentTime ->
+                        _rttMs.value = (System.currentTimeMillis() - sentTime).toFloat()
                     }
-                    lastPongTime.set(System.currentTimeMillis())
                     _pongEvents.tryEmit(Unit)
                     return
                 }
-                _textMessages.tryEmit(text)
+                val emitted = _textMessages.tryEmit(text)
+                // Wrap in the same `HIGH_FREQ_WS_TYPES` filter as the receive log. Emitting at
+                // 60Hz from the cursor channel alone drowns the log; we still log the rare types
+                // (config_complete, answer, candidate, etc.) so protocol milestones are visible.
+                if (type !in HIGH_FREQ_WS_TYPES) {
+                    Log.v(TAG, "WS Message emitted: $emitted (subs=${_textMessages.subscriptionCount.value})")
+                }
             }
 
             override fun onMessage(webSocket: WebSocket, bytes: okio.ByteString) {
-                _binaryMessages.tryEmit(bytes.toByteArray())
+                val data = bytes.toByteArray()
+                val isRelayMedia = RelayMediaProtocol.isMediaEnvelope(data)
+                val mediaSink: ((ByteArray) -> Unit)?
+                synchronized(reconnectLock) {
+                    if (!claimCurrentSocket(generation, webSocket)) return
+                    lastPongTime.set(System.currentTimeMillis())
+                    mediaSink = if (isRelayMedia && relayGate.acceptsMedia()) {
+                        onRelayMediaBinary
+                    } else {
+                        null
+                    }
+                }
+
+                if (isRelayMedia) {
+                    // Decoder execution may synchronously request a keyframe via sendText(). Never
+                    // invoke it under reconnectLock; revalidate the socket immediately beforehand.
+                    if (mediaSink != null && isCurrentSocket(generation, webSocket)) mediaSink(data)
+                    return
+                }
+                if (isCurrentSocket(generation, webSocket)) _binaryMessages.tryEmit(data)
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                Log.d(TAG, "WebSocket closing: $code $reason")
+                synchronized(reconnectLock) {
+                    if (!claimCurrentSocket(generation, webSocket)) return
+                    Log.d(TAG, "WebSocket closing: $code $reason")
+                }
                 webSocket.close(1000, null)
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                Log.d(TAG, "WebSocket closed: $code $reason")
-                _connectionState.value = WsConnectionState.DISCONNECTED
+                synchronized(reconnectLock) {
+                    if (!claimCurrentSocket(generation, webSocket)) return
+                    Log.d(TAG, "WebSocket closed: $code $reason")
+                    scheduleReconnect(generation, webSocket)
+                }
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                Log.e(TAG, "WebSocket failure: ${t.message}", t)
-                _connectionState.value = WsConnectionState.FAILED
+                synchronized(reconnectLock) {
+                    if (!claimCurrentSocket(generation, webSocket)) return
+                    Log.e(TAG, "WebSocket failure: ${t.message}", t)
+                    scheduleReconnect(generation, webSocket)
+                }
             }
         })
+        synchronized(reconnectLock) {
+            if (generation == connectionGeneration.get() && !userInitiatedClose) {
+                webSocket = socket
+            } else {
+                socket.cancel()
+            }
+        }
     }
+
+    /** Caller must hold [reconnectLock]. Allows synchronous OkHttp callbacks to claim the socket. */
+    private fun claimCurrentSocket(generation: Long, socket: WebSocket): Boolean {
+        if (generation != connectionGeneration.get() || userInitiatedClose) return false
+        if (webSocket == null) webSocket = socket
+        return socket === webSocket
+    }
+
+    private fun isCurrentSocket(generation: Long, socket: WebSocket): Boolean =
+        synchronized(reconnectLock) { claimCurrentSocket(generation, socket) }
 
     fun sendText(text: String): Boolean {
-        return webSocket?.send(text) ?: false
+        return synchronized(reconnectLock) {
+            if (userInitiatedClose) false else webSocket?.send(text) ?: false
+        }
     }
 
+    /** Send a binary WS frame — used by relay-media fallback (input back-channel over the room WS). */
+    fun sendBinary(data: ByteArray): Boolean {
+        return synchronized(reconnectLock) {
+            if (userInitiatedClose) false else webSocket?.send(okio.ByteString.of(*data)) ?: false
+        }
+    }
+
+    /**
+     * User-initiated disconnect. Cancels any pending/in-flight reconnect attempt and never
+     * re-triggers one — the resulting `onClosed` callback (code 1000) is recognized as
+     * user-initiated via [userInitiatedClose] and will not schedule a reconnect.
+     */
     fun disconnect() {
-        pingJob?.cancel()
-        pingJob = null
-        webSocket?.close(1000, "Client disconnect")
-        webSocket = null
-        _connectionState.value = WsConnectionState.DISCONNECTED
+        val socket: WebSocket?
+        val relayModeSink: ((Boolean) -> Unit)?
+        synchronized(reconnectLock) {
+            connectionGeneration.incrementAndGet()
+            userInitiatedClose = true
+            reconnectJob?.cancel()
+            reconnectJob = null
+            pingJob?.cancel()
+            pingJob = null
+            socket = webSocket
+            webSocket = null
+            reconnectPolicy.reset()
+            _reconnectAttempt.value = 0
+            relayModeSink = onRelayMediaModeChanged
+            _connectionState.value = WsConnectionState.DISCONNECTED
+        }
+        relayModeSink?.invoke(false)
+        socket?.close(1000, "Client disconnect")
     }
 
-    private fun startPingLoop() {
+    /**
+     * Schedules the next reconnect attempt with exponential backoff + jitter (see
+     * [WebSocketReconnectPolicy]), unless the drop was user-initiated or a reconnect is already
+     * pending (single-flight guard). Resends [lastConnectUrl] verbatim so the relay sees the
+     * same `session`/auth params on the new connection.
+     */
+    private fun scheduleReconnect(failedGeneration: Long, failedSocket: WebSocket) {
+        val url: String
+        val delayMs: Long
+        val reconnectGeneration: Long
+        synchronized(reconnectLock) {
+            if (failedGeneration != connectionGeneration.get() || failedSocket !== webSocket) return
+            if (userInitiatedClose) return
+            if (reconnectJob?.isActive == true) return // already have one in flight
+            // Invalidate every callback and ping operation belonging to the failed socket now,
+            // not after the reconnect delay expires.
+            reconnectGeneration = connectionGeneration.incrementAndGet()
+            webSocket = null
+            pingJob?.cancel()
+            pingJob = null
+            url = lastConnectUrl ?: run {
+                // Never had anything to connect to — nothing to retry.
+                _connectionState.value = WsConnectionState.FAILED
+                return
+            }
+            delayMs = reconnectPolicy.nextDelayMs()
+            _reconnectAttempt.value = reconnectPolicy.attempt
+            _connectionState.value = WsConnectionState.RECONNECTING
+            Log.d(TAG, "Reconnect attempt ${reconnectPolicy.attempt} scheduled in ${delayMs}ms")
+            val job = scope.launch(start = CoroutineStart.LAZY) {
+                delay(delayMs)
+                synchronized(reconnectLock) {
+                    // Transfer ownership before dialing so an immediate failure can schedule the
+                    // following attempt instead of seeing this coroutine as still in flight.
+                    if (reconnectJob !== coroutineContext[Job]) return@launch
+                    reconnectJob = null
+                }
+                connectWithUrl(
+                    url,
+                    isReconnect = true,
+                    reconnectFromGeneration = reconnectGeneration
+                )
+            }
+            reconnectJob = job
+            job.start()
+        }
+    }
+
+    private fun startPingLoop(generation: Long, socket: WebSocket) {
         pingJob?.cancel()
         pingJob = scope.launch {
             // Seed lastPongTime so the first interval doesn't false-positive.
             lastPongTime.set(System.currentTimeMillis())
             while (isActive) {
                 delay(PING_INTERVAL_MS)
+                if (!isCurrentSocket(generation, socket)) break
                 val ts = System.currentTimeMillis()
-                webSocket?.send("ping:$ts")
+                if (!socket.send("ping:$ts")) {
+                    Log.w(TAG, "Ping send failed — reconnecting")
+                    socket.cancel()
+                    scheduleReconnect(generation, socket)
+                    break
+                }
 
                 // C2: detect silent server death (no FIN/RST sent).
-                // If we haven't received a pong for 3 consecutive intervals, mark FAILED.
+                // If we haven't received a pong for 3 consecutive intervals, treat it as a
+                // transport drop and reconnect rather than declaring a hard failure.
                 val elapsed = System.currentTimeMillis() - lastPongTime.get()
                 if (elapsed > PING_TIMEOUT_MS) {
-                    Log.w(TAG, "Ping timeout (${elapsed}ms since last pong) — marking FAILED")
-                    _connectionState.value = WsConnectionState.FAILED
-                    webSocket?.cancel()
-                    webSocket = null
+                    Log.w(TAG, "Ping timeout (${elapsed}ms since last pong) — reconnecting")
+                    socket.cancel()
+                    scheduleReconnect(generation, socket)
                     break
                 }
             }
@@ -222,6 +474,22 @@ class WebSocketClient @Inject constructor() {
     companion object {
         private const val TAG = "WebSocketClient"
         private const val PING_INTERVAL_MS = 3_000L
+
+        /**
+         * WS message types we explicitly do NOT log on the receive path.
+         * Cursor position arrives at ~60Hz, frameTiming carries ~10-frame arrays — these
+         * dominate the log even after the 80-char truncation. They're noisy by design, not
+         * flagged errors. Add new types here ONLY when the volume is proven to be a problem.
+         */
+        private val HIGH_FREQ_WS_TYPES = setOf(
+            "cursor_position",
+            "frameTiming",
+            "decoder_ready",
+            "request_keyframe",
+            "fps_feedback",
+            "quality_feedback",
+        )
+
         /** 3 missed pings before declaring connection dead. */
         private const val PING_TIMEOUT_MS = PING_INTERVAL_MS * 3
     }
@@ -231,5 +499,9 @@ enum class WsConnectionState {
     DISCONNECTED,
     CONNECTING,
     CONNECTED,
+    /** Auto-reconnecting after a non-user-initiated drop; see [WebSocketClient.reconnectAttempt]. */
+    RECONNECTING,
+    /** Never reached by the automatic backoff loop itself (it retries indefinitely on any drop
+     *  once a connection has been attempted) — reserved as a defensive terminal state. */
     FAILED
 }

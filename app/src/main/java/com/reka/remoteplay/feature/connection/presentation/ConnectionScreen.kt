@@ -8,13 +8,15 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Login
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.res.stringResource
@@ -23,8 +25,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.tooling.preview.Preview
+import android.widget.Toast
 import com.reka.remoteplay.R
+import com.reka.remoteplay.core.debug.DebugFlags
 import com.reka.remoteplay.core.network.relay.RelayDevice
+import com.reka.remoteplay.feature.connection.data.local.PairedHost
 import com.reka.remoteplay.feature.connection.data.local.SavedServer
 import com.reka.remoteplay.feature.connection.data.remote.ServerDiscoveryService
 import com.reka.remoteplay.feature.connection.domain.model.ConnectionState
@@ -44,7 +50,7 @@ fun ConnectionScreen(
     onConnectToServer: (SavedServer) -> Unit,
     onConnectToDiscovered: (ServerDiscoveryService.DiscoveredServer) -> Unit,
     onRemoveServer: (SavedServer) -> Unit,
-    onLogout: () -> Unit,
+    onScanQR: () -> Unit = {},
     relayDevices: List<RelayDevice> = emptyList(),
     isLoggedIn: Boolean = false,
     onConnectToRelayDevice: (RelayDevice) -> Unit = {},
@@ -54,9 +60,13 @@ fun ConnectionScreen(
     guestConnecting: Boolean = false,
     onGuestDeviceIdChange: (String) -> Unit = {},
     onGuestPasswordChange: (String) -> Unit = {},
-    onGuestConnect: () -> Unit = {}
+    onGuestConnect: () -> Unit = {},
+    diagnostics: ConnectionDiagnostics? = null,
+    pairedHosts: List<PairedHost> = emptyList(),
+    onUnpairHost: (String) -> Unit = {},
 ) {
     val isBusy = connectionState.isConnected
+    val context = LocalContext.current
 
     Box(
         modifier = Modifier
@@ -77,18 +87,15 @@ fun ConnectionScreen(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End
             ) {
-                if (isLoggedIn) {
-                    TextButton(onClick = onLogout) {
-                        Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = "Logout", tint = AppRed, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Logout", color = AppRed, fontSize = 14.sp)
-                    }
-                } else {
-                    TextButton(onClick = onLogout) {
-                        Icon(Icons.AutoMirrored.Filled.Login, contentDescription = "Sign In", tint = AppAccent, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Sign In", color = AppAccent, fontSize = 14.sp)
-                    }
+                TextButton(onClick = onScanQR) {
+                    Icon(
+                        imageVector = Icons.Default.QrCodeScanner,
+                        contentDescription = "Scan QR",
+                        tint = AppAccent,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Scan QR", color = AppAccent, fontSize = 14.sp)
                 }
             }
 
@@ -106,7 +113,20 @@ fun ConnectionScreen(
                 text = stringResource(R.string.app_name),
                 fontSize = 28.sp,
                 fontWeight = FontWeight.Bold,
-                color = AppTextPrimary
+                color = AppTextPrimary,
+                // Hidden dev affordance (debug builds only): long-press the title to toggle the
+                // P0 forced-relay baseline. Field testers use this to force TURN without a rebuild.
+                // No-op on release builds (DebugFlags.toggleForceRelayOnly returns false).
+                modifier = Modifier.pointerInput(Unit) {
+                    detectTapGestures(onLongPress = {
+                        val on = DebugFlags.toggleForceRelayOnly(context)
+                        Toast.makeText(
+                            context,
+                            if (on) "Forced-relay ON (P0 TURN test)" else "Forced-relay OFF",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    })
+                }
             )
             Text(
                 text = stringResource(R.string.connect_to_pc),
@@ -385,7 +405,25 @@ fun ConnectionScreen(
                         )
                     }
                 }
+
+                // Connection diagnostics — show only when a session is active
+                // (host/srflx/relay/failed; not "unknown") so the home screen
+                // is not cluttered.
+                val activeType = diagnostics?.connectionType ?: "unknown"
+                if (activeType != "unknown" && activeType != "checking") {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    ConnectionDiagnosticsCard(
+                        connectionType = diagnostics!!.connectionType,
+                        hostCount = diagnostics.hostCount,
+                        srflxCount = diagnostics.srflxCount,
+                        relayCount = diagnostics.relayCount,
+                        prflxCount = diagnostics.prflxCount,
+                        gatherDurationMs = diagnostics.gatherDurationMs
+                    )
+                }
             }
+
+            PairedDevicesSection(pairedHosts = pairedHosts, onUnpairHost = onUnpairHost)
         }
     }
 }
@@ -549,5 +587,70 @@ private fun RelayDeviceItem(
                 )
             }
         }
+    }
+}
+
+@Preview(name = "Main Screen - Idle", showBackground = true)
+@Composable
+private fun ConnectionScreenIdlePreview() {
+    RemotePlayTheme {
+        ConnectionScreen(
+            connectionState = ConnectionState.Disconnected,
+            savedServers = listOf(
+                SavedServer(name = "Gaming PC", host = "192.168.1.10", port = 8288, lastConnected = System.currentTimeMillis()),
+                SavedServer(name = "Work Laptop", host = "192.168.1.11", port = 8288)
+            ),
+            discoveredServers = emptyList(),
+            isScanning = false,
+            onStartScan = {},
+            onStopScan = {},
+            onDisconnect = {},
+            onConnectToServer = {},
+            onConnectToDiscovered = {},
+            onRemoveServer = {},
+            onScanQR = {}
+        )
+    }
+}
+
+@Preview(name = "Main Screen - Scanning", showBackground = true)
+@Composable
+private fun ConnectionScreenScanningPreview() {
+    RemotePlayTheme {
+        ConnectionScreen(
+            connectionState = ConnectionState.Disconnected,
+            savedServers = emptyList(),
+            discoveredServers = listOf(
+                ServerDiscoveryService.DiscoveredServer(name = "Desktop-ABC", ip = "192.168.1.100", port = 8288)
+            ),
+            isScanning = true,
+            onStartScan = {},
+            onStopScan = {},
+            onDisconnect = {},
+            onConnectToServer = {},
+            onConnectToDiscovered = {},
+            onRemoveServer = {},
+            onScanQR = {}
+        )
+    }
+}
+
+@Preview(name = "Main Screen - Connecting", showBackground = true)
+@Composable
+private fun ConnectionScreenConnectingPreview() {
+    RemotePlayTheme {
+        ConnectionScreen(
+            connectionState = ConnectionState.Connecting,
+            savedServers = emptyList(),
+            discoveredServers = emptyList(),
+            isScanning = false,
+            onStartScan = {},
+            onStopScan = {},
+            onDisconnect = {},
+            onConnectToServer = {},
+            onConnectToDiscovered = {},
+            onRemoveServer = {},
+            onScanQR = {}
+        )
     }
 }

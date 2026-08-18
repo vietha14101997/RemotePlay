@@ -91,9 +91,9 @@ class VideoDecoderManager @Inject constructor(
             _firstFrameReceived.value += monitorIndex
             Log.i(TAG, "★ Monitor $monitorIndex FIRST FRAME RENDERED ★")
         }
-        decoder.onDecoderReady = {
-            Log.i(TAG, "Monitor $monitorIndex decoder ready, signaling server")
-            onDecoderReady?.invoke(monitorIndex)
+        decoder.onKeyframeRequired = {
+            Log.w(TAG, "Monitor $monitorIndex needs an IDR, signaling server")
+            onDecoderReady?.invoke(monitorIndex) == true
         }
         // C3: Track server-side resolution changes (e.g. quality preset switch via update_config).
         // The server's TextureResizer recalculates encoded resolution and the new dimensions are
@@ -116,7 +116,7 @@ class VideoDecoderManager @Inject constructor(
     }
 
     /** Callback when decoder is configured and ready to receive frames */
-    var onDecoderReady: ((monitorIndex: Int) -> Unit)? = null
+    var onDecoderReady: ((monitorIndex: Int) -> Boolean)? = null
 
     /** Callback to request keyframe from server after codec change */
     var onCodecChanged: ((newCodec: String) -> Unit)? = null

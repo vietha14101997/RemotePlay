@@ -11,6 +11,7 @@ import com.reka.remoteplay.core.network.MessageParser
 import com.reka.remoteplay.core.network.WebSocketClient
 import com.reka.remoteplay.feature.connection.domain.model.ConnectionState
 import com.reka.remoteplay.feature.connection.domain.repository.ConnectionStateRepository
+import com.reka.remoteplay.feature.streaming.data.remote.WebRtcManager
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -23,7 +24,9 @@ class PhaseOneHandler @Inject constructor(
     private val webSocketClient: WebSocketClient,
     private val connectionStateRepo: ConnectionStateRepository,
     private val codecDetector: CodecDetector,
-    private val speedTestClient: SpeedTestClient
+    private val speedTestClient: SpeedTestClient,
+    // P5 F8: hardware_info carries the host's supports_ice_restart capability flag.
+    private val webRtcManager: WebRtcManager
 ) {
     private val _serverInfo = MutableStateFlow<HardwareInfoMessage?>(null)
     val serverInfo: StateFlow<HardwareInfoMessage?> = _serverInfo.asStateFlow()
@@ -33,24 +36,31 @@ class PhaseOneHandler @Inject constructor(
 
     private var messageJob: Job? = null
     private var binaryJob: Job? = null
-    private var listeningScope: CoroutineScope? = null
+
+    // Singleton-owned scope: the handshake must survive navigation. Collection used to
+    // run on the caller's viewModelScope — the QR scanner screen's ViewModel is cleared
+    // when that screen pops, which killed the collection job mid-Phase-1 (messages then
+    // arrived with zero subscribers and the UI froze at "Getting recommendations").
+    // Jobs are cancelled explicitly in reset().
+    private val handlerScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     companion object {
         private const val TAG = "PhaseOneHandler"
     }
 
-    fun startListening(scope: CoroutineScope, displayMetrics: DisplayMetrics) {
-        listeningScope = scope
-        
+    fun startListening(displayMetrics: DisplayMetrics) {
+        Log.i(TAG, "startListening called")
+
         messageJob?.cancel()
-        messageJob = scope.launch {
+        messageJob = handlerScope.launch {
+            Log.d(TAG, "Message collection job started")
             webSocketClient.textMessages.collect { text ->
                 handleTextMessage(text, displayMetrics)
             }
         }
 
         binaryJob?.cancel()
-        binaryJob = scope.launch {
+        binaryJob = handlerScope.launch {
             webSocketClient.binaryMessages.collect { data ->
                 speedTestClient.handleBinaryData(data)
             }
@@ -58,39 +68,74 @@ class PhaseOneHandler @Inject constructor(
     }
 
     private fun handleTextMessage(text: String, displayMetrics: DisplayMetrics) {
-        val type = MessageParser.getMessageType(text) ?: return
+        val type = MessageParser.getMessageType(text)
+        
+        if (type == null) return
 
-        when (type) {
-            "hardware_info" -> {
-                Log.d(TAG, "Received hardware_info")
-                val msg = MessageParser.parse<HardwareInfoMessage>(text) ?: return
-                _serverInfo.value = msg
+        try {
+            when (type) {
+                "hardware_info" -> {
+                    android.util.Log.e("PhaseOneHandler", ">>> PROCESSING hardware_info <<<")
+                    val msg = MessageParser.parse<HardwareInfoMessage>(text)
+                    if (msg == null) {
+                        android.util.Log.e("PhaseOneHandler", "FAILED to parse hardware_info JSON")
+                        return
+                    }
+                    
+                    _serverInfo.value = msg
+                    webRtcManager.setSupportsIceRestart(msg.supportsIceRestart)
 
-                connectionStateRepo.tryTransition(ConnectionState.AwaitingHardwareInfo)
+                    // Force transition to ensure we don't get stuck due to ordering issues
+                    connectionStateRepo.forceTransition(ConnectionState.AwaitingHardwareInfo)
 
-                val codecs = codecDetector.detectCapabilities(displayMetrics)
-                val ack = HardwareInfoAckMessage(
-                    clientCodecs = codecs,
-                    perTrackPc = true
-                )
-                webSocketClient.sendText(MessageParser.serialize(ack))
+                    val codecs = codecDetector.detectCapabilities(displayMetrics)
+                    // Relay sessions run single-PC mode: per-track video PCs have no
+                    // ICE-restart path, so on a TURN-dependent (cross-network) session
+                    // one failed video PC bricks the stream. Keeping everything on the
+                    // main PC also means a single TURN allocation. LAN/tunnel sessions
+                    // keep per-track PCs for SCTP head-of-line isolation.
+                    val perTrack = !webSocketClient.isRelayTransport
+                    if (!perTrack) Log.i(TAG, "Relay transport: requesting single-PC mode (perTrackPc=false)")
+                    val ack = HardwareInfoAckMessage(
+                        clientCodecs = codecs,
+                        perTrackPc = perTrack,
+                        // Android keeps its intentional single-active-monitor policy;
+                        // explicit false makes the active-monitor-only branch obvious in
+                        // Host handshake logs even on a Host that defaults the field.
+                        streamAllMonitors = false
+                    )
+                    val ackJson = MessageParser.serialize(ack)
+                    Log.d(TAG, "Sending hardware_info_ack: $ackJson")
+                    webSocketClient.sendText(ackJson)
 
-                // Speed test removed — wait directly for suggested_config
-                connectionStateRepo.tryTransition(ConnectionState.AwaitingSuggestedConfig)
+                    // Transition to next state
+                    val transitioned = connectionStateRepo.tryTransition(ConnectionState.AwaitingSuggestedConfig)
+                    Log.d(TAG, "Transitioned to AwaitingSuggestedConfig: $transitioned")
+                }
+
+                "speedtest_start" -> {
+                    Log.d(TAG, "Received speedtest_start")
+                    connectionStateRepo.tryTransition(ConnectionState.SpeedTesting)
+                    // The SpeedTestClient handles binary data via binaryJob
+                }
+
+                "suggested_config" -> {
+                    Log.d(TAG, "Received suggested_config")
+                    val msg = MessageParser.parse<SuggestedConfigMessage>(text) ?: return
+                    _suggestedConfig.value = msg
+                    connectionStateRepo.tryTransition(ConnectionState.ConfiguringSettings)
+                }
+
+                "error" -> {
+                    val msg = MessageParser.parse<ErrorMessage>(text) ?: return
+                    connectionStateRepo.forceTransition(
+                        ConnectionState.Error(msg.message, phase = msg.phase)
+                    )
+                }
             }
-
-            "suggested_config" -> {
-                val msg = MessageParser.parse<SuggestedConfigMessage>(text) ?: return
-                _suggestedConfig.value = msg
-                connectionStateRepo.tryTransition(ConnectionState.ConfiguringSettings)
-            }
-
-            "error" -> {
-                val msg = MessageParser.parse<ErrorMessage>(text) ?: return
-                connectionStateRepo.forceTransition(
-                    ConnectionState.Error(msg.message, phase = msg.phase)
-                )
-            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error handling message type $type: ${e.message}", e)
+            connectionStateRepo.forceTransition(ConnectionState.Error("Client error: ${e.message}"))
         }
     }
 
@@ -105,9 +150,12 @@ class PhaseOneHandler @Inject constructor(
         binaryJob?.cancel()
         messageJob = null
         binaryJob = null
-        listeningScope = null
         _serverInfo.value = null
         _suggestedConfig.value = null
         speedTestClient.reset()
+        // P5 F8: don't let a previous host's capability leak into a fresh connection attempt
+        // before the new hardware_info arrives — default back to "unsupported" (safe: falls
+        // back to restart_phase2 rather than risking an ICE restart the new host can't apply).
+        webRtcManager.setSupportsIceRestart(false)
     }
 }

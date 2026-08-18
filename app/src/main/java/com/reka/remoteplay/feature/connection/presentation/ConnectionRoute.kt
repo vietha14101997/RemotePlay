@@ -8,8 +8,8 @@ import com.reka.remoteplay.feature.connection.domain.model.ConnectionState
 @Composable
 fun ConnectionRoute(
     onNavigateToConfigReview: () -> Unit,
-    onNavigateToLogin: () -> Unit,
-    viewModel: ConnectionViewModel = hiltViewModel()
+    onNavigateToQrScanner: () -> Unit,
+    viewModel: ConnectionViewModel = hiltViewModel(),
 ) {
     val connectionState by viewModel.connectionState.collectAsState()
     val isViewerMode by viewModel.isViewerMode.collectAsState()
@@ -49,6 +49,23 @@ fun ConnectionRoute(
     val guestError by viewModel.guestError.collectAsState()
     val guestConnecting by viewModel.guestConnecting.collectAsState()
 
+    val webRtcConnectionType by viewModel.webRtcConnectionType.collectAsState()
+    val webRtcIceHostCount by viewModel.webRtcIceHostCount.collectAsState()
+    val webRtcIceSrflxCount by viewModel.webRtcIceSrflxCount.collectAsState()
+    val webRtcIceRelayCount by viewModel.webRtcIceRelayCount.collectAsState()
+    val webRtcIcePrflxCount by viewModel.webRtcIcePrflxCount.collectAsState()
+    val webRtcIceGatherDurationMs by viewModel.webRtcIceGatherDurationMs.collectAsState()
+    val pairedHosts by viewModel.pairedHosts.collectAsState()
+
+    val diagnostics = ConnectionDiagnostics(
+        connectionType = webRtcConnectionType,
+        hostCount = webRtcIceHostCount,
+        srflxCount = webRtcIceSrflxCount,
+        relayCount = webRtcIceRelayCount,
+        prflxCount = webRtcIcePrflxCount,
+        gatherDurationMs = webRtcIceGatherDurationMs
+    )
+
     ConnectionScreen(
         connectionState = connectionState,
         savedServers = savedServers,
@@ -60,7 +77,9 @@ fun ConnectionRoute(
         onConnectToServer = viewModel::connectToServer,
         onConnectToDiscovered = viewModel::connectToDiscovered,
         onRemoveServer = viewModel::removeServer,
+        onScanQR = onNavigateToQrScanner,
         relayDevices = relayDevices,
+        diagnostics = diagnostics,
         isLoggedIn = isLoggedIn,
         onConnectToRelayDevice = viewModel::connectToRelayDevice,
         guestDeviceId = guestDeviceId,
@@ -70,10 +89,22 @@ fun ConnectionRoute(
         onGuestDeviceIdChange = viewModel::onGuestDeviceIdChange,
         onGuestPasswordChange = viewModel::onGuestPasswordChange,
         onGuestConnect = viewModel::connectAsGuest,
-        onLogout = {
-            viewModel.logout()
-            onNavigateToLogin()
-        }
+        pairedHosts = pairedHosts,
+        onUnpairHost = viewModel::unpairHost,
+    )
+}
+
+@Composable
+fun QrScannerRoute(
+    onNavigateBack: () -> Unit,
+    viewModel: ConnectionViewModel = hiltViewModel()
+) {
+    QrScannerScreen(
+        onResult = { config ->
+            viewModel.connectWithQr(config)
+            onNavigateBack()
+        },
+        onBack = onNavigateBack
     )
 }
 
@@ -91,6 +122,7 @@ fun ConfigReviewRoute(
     val savedWindowsScale by viewModel.savedWindowsScale.collectAsState()
     val bindMobileScreen by viewModel.bindMobileScreen.collectAsState()
     val qualityPreset by viewModel.qualityPreset.collectAsState()
+    val streamMode by viewModel.savedStreamMode.collectAsState()
 
     var isPaused by rememberSaveable { mutableStateOf(false) }
     val connectionType = remember { viewModel.getConnectionType() }
@@ -126,8 +158,10 @@ fun ConfigReviewRoute(
             bindMobileScreen = bindMobileScreen,
             deviceScreenSpecs = viewModel.deviceScreenSpecs,
             qualityPreset = qualityPreset,
+            streamMode = streamMode,
             onBindMobileScreenChanged = viewModel::setBindMobileScreen,
             onQualityPresetChanged = viewModel::setQualityPreset,
+            onStreamModeChanged = viewModel::setStreamMode,
             onProceed = { monitors, fps, windowsScale ->
                 navigated = false
                 isPaused = false

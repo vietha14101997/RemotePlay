@@ -10,6 +10,7 @@ import com.reka.remoteplay.core.util.EncoderResolutionCalculator
 import com.reka.remoteplay.core.util.QualityPreset
 import com.reka.remoteplay.core.network.MessageParser
 import com.reka.remoteplay.core.network.WebSocketClient
+import com.reka.remoteplay.feature.connection.data.local.ConnectionPreferences
 import com.reka.remoteplay.feature.connection.domain.model.ConnectionState
 import com.reka.remoteplay.feature.connection.domain.repository.ConnectionStateRepository
 import com.reka.remoteplay.feature.streaming.data.remote.*
@@ -31,7 +32,8 @@ class StreamingViewModel @Inject constructor(
     private val webSocketClient: WebSocketClient,
     private val cursorRenderer: CursorRenderer,
     private val externalInputHandler: ExternalInputHandler,
-    private val audioPlayer: AudioPlayer
+    private val audioPlayer: AudioPlayer,
+    private val preferences: ConnectionPreferences
 ) : AndroidViewModel(application) {
 
     val connectionState = connectionStateRepo.state
@@ -45,6 +47,10 @@ class StreamingViewModel @Inject constructor(
 
     private val _showUI = MutableStateFlow(false)
     val showUI: StateFlow<Boolean> = _showUI.asStateFlow()
+
+    // Stream Mode: Gaming vs Work
+    private val _streamMode = MutableStateFlow(phaseTwoHandler.streamMode.value)
+    val streamMode: StateFlow<String> = _streamMode.asStateFlow()
 
     // Viewer quality preset — controls server-side frame skip
     private val _viewerQuality = MutableStateFlow("high") // "high", "medium", "low"
@@ -130,11 +136,14 @@ class StreamingViewModel @Inject constructor(
             }
         }
 
+        val connectStartTime = System.currentTimeMillis()
         viewModelScope.launch {
             webSocketClient.textMessages.collect { text ->
                 when (val msg = MessageParser.parseServerMessage(text)) {
                     is ForegroundMonitorMessage -> {
-                        if (msg.monitorIndex != videoDecoderManager.activeMonitor.value) {
+                        // Prevent initial auto-switch race condition right at startup (first 3.5s)
+                        if (System.currentTimeMillis() - connectStartTime > 3500L &&
+                            msg.monitorIndex != videoDecoderManager.activeMonitor.value) {
                             switchMonitor(msg.monitorIndex)
                         }
                     }
@@ -177,7 +186,6 @@ class StreamingViewModel @Inject constructor(
                         webSocketClient.sendText(MessageParser.serialize(PauseMonitorMessage(monitorIndex = index)))
                     }
                 }
-
                 // Allow ICE to stabilise before injecting focus + cursor warp
                 delay(FOCUS_WARP_DELAY_MS)
                 webRtcManager.sendInput(InputProtocol.encodeFocusMonitor(0))
@@ -225,6 +233,8 @@ class StreamingViewModel @Inject constructor(
     val showKeyboard: StateFlow<Boolean> = _showKeyboard.asStateFlow()
 
     private var mouseSensitivity = 1.0f
+    private var subpixelX = 0f
+    private var subpixelY = 0f
 
     fun setMouseSensitivity(sensitivity: Float) {
         mouseSensitivity = sensitivity
@@ -254,6 +264,20 @@ class StreamingViewModel @Inject constructor(
         webSocketClient.sendText(MessageParser.serialize(msg))
     }
 
+    fun changeStreamMode(mode: String) {
+        _streamMode.value = mode
+        phaseTwoHandler.setStreamMode(mode)
+        viewModelScope.launch { preferences.saveStreamMode(mode) }
+        val isWork = mode == "work" || mode == "efficiency"
+        val fps = if (isWork && _streamFps.value > 30) 30 else null
+        if (fps != null) {
+            _streamFps.value = fps
+            phaseTwoHandler.setConfiguredFps(fps)
+        }
+        val msg = UpdateConfigMessage(streamMode = mode, fps = fps)
+        webSocketClient.sendText(MessageParser.serialize(msg))
+    }
+
     fun sendText(text: String) {
         if (text.isNotEmpty()) {
             webRtcManager.sendInput(InputProtocol.encodeText(text))
@@ -264,10 +288,23 @@ class StreamingViewModel @Inject constructor(
         webRtcManager.sendInput(InputProtocol.encodeKey(vk.toShort(), down))
     }
 
+    fun sendMouseMove(dx: Float, dy: Float) {
+        val scaledDx = dx * mouseSensitivity
+        val scaledDy = dy * mouseSensitivity
+
+        subpixelX += scaledDx
+        subpixelY += scaledDy
+        val sendX = subpixelX.toInt()
+        val sendY = subpixelY.toInt()
+        if (sendX != 0 || sendY != 0) {
+            subpixelX -= sendX
+            subpixelY -= sendY
+            webRtcManager.sendInput(InputProtocol.encodeMouseMove(sendX.toShort(), sendY.toShort()))
+        }
+    }
+
     fun sendMouseMove(dx: Short, dy: Short) {
-        val scaledDx = (dx * mouseSensitivity).toInt().toShort()
-        val scaledDy = (dy * mouseSensitivity).toInt().toShort()
-        webRtcManager.sendInput(InputProtocol.encodeMouseMove(scaledDx, scaledDy))
+        sendMouseMove(dx.toFloat(), dy.toFloat())
     }
 
     fun sendMouseButton(button: Byte, down: Boolean) {

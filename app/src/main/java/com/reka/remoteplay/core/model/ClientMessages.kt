@@ -9,7 +9,12 @@ import com.squareup.moshi.JsonClass
 data class HardwareInfoAckMessage(
     @param:Json(name = "type") val type: String = "hardware_info_ack",
     @param:Json(name = "clientCodecs") val clientCodecs: ClientCodecCapability? = null,
-    @param:Json(name = "perTrackPc") val perTrackPc: Boolean = true
+    @param:Json(name = "perTrackPc") val perTrackPc: Boolean = true,
+    // Android keeps its intentional single-active-monitor policy: only the active decoder
+    // receives frames and the remaining monitors are paused via pause_monitor messages.
+    // Explicit false here so the Host negotiates the active-monitor-only branch even when
+    // its default would flip on missing fields.
+    @param:Json(name = "streamAllMonitors") val streamAllMonitors: Boolean = false
 )
 
 @JsonClass(generateAdapter = true)
@@ -46,7 +51,38 @@ data class DisplayConfigMessage(
     @param:Json(name = "preferGpu") val preferGpu: String? = null,
     @param:Json(name = "monitorType") val monitorType: String = "standard",
     @param:Json(name = "isUsbMode") val isUsbMode: Boolean = false,
-    @param:Json(name = "windowsScale") val windowsScale: Int = 125
+    @param:Json(name = "windowsScale") val windowsScale: Int = 125,
+    @param:Json(name = "streamMode") val streamMode: String = "gaming"
+)
+
+// ==================== Phase 5: ICE Restart on Network Change (Client -> Server) ====================
+
+/** Android is ALWAYS the offerer for ICE restarts (glare avoidance) — sent after
+ *  `peerConnection.restartIce()` + `createOffer()` on the SAME live main PeerConnection. */
+@JsonClass(generateAdapter = true)
+data class IceRestartOfferMessage(
+    @param:Json(name = "type") val type: String = "ice_restart_offer",
+    @param:Json(name = "sdp") val sdp: String = ""
+)
+
+/** Fallback when the host doesn't advertise `supports_ice_restart`, or the fast ICE-restart
+ *  path has exhausted its retry budget — asks the host to do a full (but still automatic,
+ *  no re-pair) Phase 2 renegotiation. Matches the host's existing bare `restart_phase2`
+ *  handler (`PhaseProtocolHandler.Phase2.cs`), which was previously never invoked from Android. */
+@JsonClass(generateAdapter = true)
+data class RestartPhase2Message(
+    @param:Json(name = "type") val type: String = "restart_phase2"
+)
+
+// ==================== Pairing (Phase 1 security): Client -> Server ====================
+
+/** Sent AFTER DTLS connects on the main PC, BEFORE media — see pairing-protocol-contract-v1.md.
+ *  `macC` = base64(HMAC-SHA256(psk, "RS-PAIR-v1|C|sid|nonce|hostFp|clientFp")). */
+@JsonClass(generateAdapter = true)
+data class PairingClientProofMessage(
+    @param:Json(name = "type") val type: String = "pairing_client_proof",
+    @param:Json(name = "sid") val sid: String = "",
+    @param:Json(name = "macC") val macC: String = ""
 )
 
 // ==================== Phase 3: Client -> Server ====================
@@ -96,6 +132,7 @@ data class UpdateConfigMessage(
     @param:Json(name = "qualityPreset") val qualityPreset: String? = null,
     @param:Json(name = "screenWidth") val screenWidth: Int? = null,
     @param:Json(name = "screenHeight") val screenHeight: Int? = null,
+    @param:Json(name = "streamMode") val streamMode: String? = null
 )
 
 /** M2: type-safe replacement for the raw JSON string previously used in StreamingViewModel. */

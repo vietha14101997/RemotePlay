@@ -2,6 +2,7 @@ package com.reka.remoteplay.feature.auth.presentation
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.reka.remoteplay.core.network.relay.DEFAULT_RELAY_URL
 import com.reka.remoteplay.core.network.relay.TokenManager
 import com.reka.remoteplay.feature.auth.data.AuthRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -10,7 +11,7 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 data class LoginUiState(
-    val relayUrl: String = "http://34.87.150.141:8443",
+    val relayUrl: String = DEFAULT_RELAY_URL,
     val email: String = "",
     val password: String = "",
     val username: String = "",
@@ -27,7 +28,7 @@ class LoginViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(
-        LoginUiState(relayUrl = tokenManager.relayUrl ?: "http://34.87.150.141:8443")
+        LoginUiState(relayUrl = tokenManager.relayUrl ?: DEFAULT_RELAY_URL)
     )
     val uiState: StateFlow<LoginUiState> = _uiState.asStateFlow()
 

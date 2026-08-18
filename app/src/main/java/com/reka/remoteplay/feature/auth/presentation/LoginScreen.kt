@@ -19,6 +19,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.reka.remoteplay.ui.theme.*
@@ -247,3 +248,37 @@ private fun loginFieldColors() = OutlinedTextFieldDefaults.colors(
     unfocusedTextColor = AppTextSecondary,
     cursorColor = AppAccent
 )
+
+@Preview(name = "Login Mode", showBackground = true)
+@Composable
+private fun LoginScreenPreview() {
+    RemotePlayTheme {
+        LoginScreen(
+            state = LoginUiState(email = "user@example.com"),
+            onRelayUrlChange = {},
+            onEmailChange = {},
+            onPasswordChange = {},
+            onUsernameChange = {},
+            onToggleMode = {},
+            onSubmit = {},
+            onSkip = {}
+        )
+    }
+}
+
+@Preview(name = "Register Mode", showBackground = true)
+@Composable
+private fun RegisterScreenPreview() {
+    RemotePlayTheme {
+        LoginScreen(
+            state = LoginUiState(isRegistering = true),
+            onRelayUrlChange = {},
+            onEmailChange = {},
+            onPasswordChange = {},
+            onUsernameChange = {},
+            onToggleMode = {},
+            onSubmit = {},
+            onSkip = {}
+        )
+    }
+}

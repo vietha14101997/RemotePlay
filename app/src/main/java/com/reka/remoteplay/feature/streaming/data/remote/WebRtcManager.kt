@@ -1,6 +1,7 @@
 package com.reka.remoteplay.feature.streaming.data.remote
 
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
@@ -10,23 +11,45 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import com.reka.remoteplay.core.debug.DebugFlags
 import com.reka.remoteplay.core.network.relay.IceServerConfig
+import com.reka.remoteplay.core.network.relay.RelayApi
 import org.webrtc.*
 import java.nio.ByteBuffer
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.math.roundToInt
 
 @Singleton
 class WebRtcManager @Inject constructor(
-    @param:ApplicationContext private val context: Context
+    @param:ApplicationContext private val context: Context,
+    private val relayApi: RelayApi,
+    private val certificateProvider: PersistentRtcCertificateProvider
 ) {
     private var factory: PeerConnectionFactory? = null
+
+    // Fire-and-forget scope for WAN P2P connection telemetry (never blocks/affects streaming).
+    private val telemetryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // Phase 00: session/generation/sequence bookkeeping + snapshot/path_transition change
+    // detection, extracted so it's unit-testable without a live PeerConnection.
+    private val telemetryReporter = WebRtcConnectionTelemetryReporter(relayApi, telemetryScope)
+    @Volatile private var telemetryPollingStarted = false
+
+    // P5: dedicated long-lived scope for ICE-restart scheduling (debounce/backoff/watchdog) and
+    // the best-effort TURN-credential refresh before a restart. Kept separate from
+    // [telemetryScope] so its single documented purpose (telemetry) stays unambiguous.
+    private val restartScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     // STUN only by default — enables P2P across different networks without TURN bandwidth cost.
+    // Multiple STUN providers for ISP-blocking redundancy: Google + Cloudflare + Nextcloud.
     // TURN servers can be added via setIceServers() when needed (4G fallback).
-    private var iceServers: List<PeerConnection.IceServer> = listOf(
+    private val defaultStunServers: List<PeerConnection.IceServer> = listOf(
+        PeerConnection.IceServer.builder("stun:relay.hoangha.me:3478").createIceServer(),
         PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
-        PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer()
+        PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer(),
+        PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer(),
+        PeerConnection.IceServer.builder("stun:stun.nextcloud.com:3478").createIceServer()
     )
+    private var iceServers: List<PeerConnection.IceServer> = defaultStunServers
 
     // Main PC (audio + control DataChannels)
     private var mainPc: PeerConnection? = null
@@ -58,16 +81,120 @@ class WebRtcManager @Inject constructor(
     private val _connectionType = MutableStateFlow("unknown")
     val connectionType: StateFlow<String> = _connectionType
 
+    // ICE candidate counters (H=host, S=server-reflexive, R=relay, P=peer-reflexive).
+    // Used to diagnose cross-NAT connectivity. Reset on each new connection.
+    private val _iceHostCount = MutableStateFlow(0)
+    val iceHostCount: StateFlow<Int> = _iceHostCount
+    private val _iceSrflxCount = MutableStateFlow(0)
+    val iceSrflxCount: StateFlow<Int> = _iceSrflxCount
+    private val _iceRelayCount = MutableStateFlow(0)
+    val iceRelayCount: StateFlow<Int> = _iceRelayCount
+    private val _icePrflxCount = MutableStateFlow(0)
+    val icePrflxCount: StateFlow<Int> = _icePrflxCount
+
+    // ICE gather duration in ms (time from first candidate to end-of-candidates)
+    private val _iceGatherDurationMs = MutableStateFlow(0L)
+    val iceGatherDurationMs: StateFlow<Long> = _iceGatherDurationMs
+
     // Track ICE state for resilience
     private val _iceConnectionState = MutableStateFlow(PeerConnection.IceConnectionState.NEW)
     val iceConnectionState: StateFlow<PeerConnection.IceConnectionState> = _iceConnectionState
+
+    // Internal: gather start time
+    private var gatherStartMs: Long = 0L
+    private var gatherRunning: Boolean = false
 
     // ICE candidate callbacks (to send via WebSocket)
     var onMainIceCandidate: ((IceCandidate) -> Unit)? = null
     var onVideoIceCandidate: ((Int, IceCandidate) -> Unit)? = null
 
+    // ==================== P5: ICE Restart on Network Change ====================
+
+    // F8: host capability, read from the Phase-1 hardware_info handshake by PhaseOneHandler.
+    // false (default/unknown) => every trigger falls straight to restart_phase2.
+    private val _supportsIceRestart = MutableStateFlow(false)
+    val supportsIceRestart: StateFlow<Boolean> = _supportsIceRestart
+
+    /** Emits the SDP of a freshly-created `iceRestart` offer — wired by PhaseTwoHandler to send
+     *  `ice_restart_offer` over the signaling WebSocket. */
+    var onIceRestartOffer: ((String) -> Unit)? = null
+
+    /** Fired when ICE restart isn't usable (capability false) or its retry budget is exhausted —
+     *  wired by PhaseTwoHandler to send `restart_phase2` instead. */
+    var onRequestPhase2Restart: (() -> Unit)? = null
+
+    private val iceRestartPolicy = IceRestartPolicy()
+    private val restartCoordinator = IceRestartCoordinator(
+        scope = restartScope,
+        policy = iceRestartPolicy,
+        isHealthyNow = {
+            _iceConnectionState.value == PeerConnection.IceConnectionState.CONNECTED ||
+                _iceConnectionState.value == PeerConnection.IceConnectionState.COMPLETED
+        },
+        performRestart = { trigger -> performIceRestartAttempt(trigger) },
+        fallbackToPhase2 = { onRequestPhase2Restart?.invoke() }
+    )
+
+    // F14 recovery-clock: t0 = trigger fire time, t1 = ICE back to CONNECTED. 0L = no incident
+    // currently tracked (guards against overwriting t0 on retries within the same incident).
+    @Volatile private var restartT0Ms = 0L
+
+    // M-O (best-effort): TTL bookkeeping for the ICE servers currently applied, so a restart can
+    // refresh TURN credentials first if they're close to expiring. ttlSec<=0 means "unknown" and
+    // disables the refresh (e.g. ConnectionViewModel's current callers don't thread a TTL
+    // through yet — see setIceServers below).
+    private var iceServersFetchedAtMs = 0L
+    private var iceServersTtlSec = 0
+
+    // ==================== Phase 00: debug-gated forced-relay path ====================
+
+    /** True only on a `android:debuggable` build (debug build type / debuggable-signed APK).
+     *  Release APKs are never debuggable, so this is always false there regardless of any
+     *  remote/unsigned input — the fail-closed guarantee lives in this check, not in caller
+     *  discipline. */
+    private val isDebugBuild: Boolean by lazy {
+        (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+    }
+
+    /**
+     * DEBUG-only forced-relay policy (telemetry contract v1 "Forced-path policy"): when true
+     * on a debuggable build, every new PeerConnection is created with
+     * `iceTransportsType = RELAY`, forcing media through TURN so the client-relay ->
+     * Host-srflx path can be reproduced on demand for testing. Setting this to true on a
+     * non-debuggable (release-signed) build is silently ignored — no remote/unsigned actor can
+     * flip forcing in a release build.
+     */
+    var forceRelayOnlyDebug: Boolean = false
+        set(value) {
+            if (value && !isDebugBuild) {
+                Log.w(TAG, "forceRelayOnlyDebug ignored: build is not debuggable")
+                return
+            }
+            field = value
+        }
+
     companion object {
         private const val TAG = "WebRtcManager"
+
+        /** Derive IP family from a candidate address. IPv6 literals contain ':'. */
+        internal fun addressFamilyOf(address: String?): String = when {
+            address.isNullOrBlank() -> "unknown"
+            address.contains(':') -> "ipv6"
+            else -> "ipv4"
+        }
+
+        // M-O: refresh ICE servers before a restart once 80% of their TTL has elapsed.
+        private const val ICE_SERVERS_REFRESH_THRESHOLD = 0.8
+        private const val ICE_SERVERS_REFRESH_TIMEOUT_MS = 3_000L
+
+        /** How long the first gathering generation gets to produce a relay candidate
+         *  (with TURN configured) before the early-restart kick fires. */
+        private const val TURN_ALLOCATION_WATCH_MS = 3_000L
+
+        /** Phase 00: interval between periodic selected-path telemetry polls, catching
+         *  mid-session path changes that don't coincide with an ICE connection-state
+         *  transition (e.g. consent-freshness re-nomination while state stays CONNECTED). */
+        private const val TELEMETRY_POLL_INTERVAL_MS = 5_000L
     }
 
     fun initialize() {
@@ -83,28 +210,72 @@ class WebRtcManager @Inject constructor(
             .createPeerConnectionFactory()
 
         Log.d(TAG, "PeerConnectionFactory initialized")
+        startTelemetryPollingLoopOnce()
+    }
+
+    /** Phase 00: periodic selected-path poll for every live PC, started once for the lifetime
+     *  of this @Singleton instance. Guarded so re-entrant [initialize] calls (factory != null
+     *  early-return above) never spawn a second loop. */
+    private fun startTelemetryPollingLoopOnce() {
+        if (telemetryPollingStarted) return
+        telemetryPollingStarted = true
+        telemetryScope.launch {
+            while (isActive) {
+                delay(TELEMETRY_POLL_INTERVAL_MS)
+                if (mainPc != null) pollMainPathTelemetry()
+                videoPcs.keys.toList().forEach { monitorIndex -> pollVideoPathTelemetry(monitorIndex) }
+            }
+        }
     }
 
     /**
      * Update ICE servers from relay API response for TURN/STUN support.
      * Must be called before creating any PeerConnection.
+     *
+     * @param ttlSec TURN credential lifetime in seconds, if known (from the relay's
+     *   ice-servers response `ttl` field). 0/unknown disables the M-O best-effort pre-restart
+     *   refresh below — current call sites (ConnectionViewModel via
+     *   GuestConnectionRepository.fetchIceServers()) don't thread the TTL through yet.
      */
-    fun setIceServers(servers: List<IceServerConfig>) {
-        iceServers = servers.map { config ->
+    fun setIceServers(servers: List<IceServerConfig>, ttlSec: Int = 0) {
+        val provided = servers.map { config ->
             val builder = PeerConnection.IceServer.builder(config.urls)
             if (config.username != null) builder.setUsername(config.username)
             if (config.credential != null) builder.setPassword(config.credential)
             builder.createIceServer()
         }
-        Log.d(TAG, "ICE servers updated: ${iceServers.size} server(s)")
+        // Keep the default STUN list as a floor: provided servers (TURN creds) first,
+        // defaults appended so replacing the list never loses STUN redundancy.
+        iceServers = provided + defaultStunServers
+        iceServersFetchedAtMs = System.currentTimeMillis()
+        iceServersTtlSec = ttlSec
+        Log.d(TAG, "ICE servers updated: ${provided.size} provided + ${defaultStunServers.size} default STUN, ttl=${ttlSec}s")
     }
 
     private fun buildRtcConfig(): PeerConnection.RTCConfiguration {
         return PeerConnection.RTCConfiguration(iceServers).apply {
+            // Pairing identity anchor (pairing-protocol-contract-v1.md): pin the SAME persisted
+            // certificate on every PeerConnection (main + video) so this device's DTLS fingerprint
+            // is stable across sessions/restarts.
+            certificate = certificateProvider.getOrCreate()
             bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
             rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
+            // Phase 00 debug-gated forced-path baseline — see [forceRelayOnlyDebug].
+            // Also honors the persisted DebugFlags toggle (hidden long-press on the
+            // Connection-screen title) so field testers can force TURN without a rebuild.
+            // Both inputs are debug-gated (field setter guard + DebugFlags.isDebuggable).
+            val relayForced = forceRelayOnlyDebug || DebugFlags.forceRelayOnly(context)
+            if (relayForced) Log.w(TAG, "[ForcedRelay] iceTransportsType=RELAY (P0 forced-path baseline active)")
+            iceTransportsType = if (relayForced) {
+                PeerConnection.IceTransportsType.RELAY
+            } else {
+                PeerConnection.IceTransportsType.ALL
+            }
+            // Pre-gather 4 candidates so peer connection reuses already-known
+            // srflx candidates on reconnect, reducing ICE gather time.
+            iceCandidatePoolSize = 4
             // Absolute minimum jitter buffer for lowest audio latency.
             // User reports ~100ms audio lag behind video (audio continues after video shows pause).
             // 10ms Opus frames × 2 packets = 20ms max buffer.
@@ -119,20 +290,38 @@ class WebRtcManager @Inject constructor(
     fun createMainPcOffer(callback: (String) -> Unit) {
         val f = factory ?: return
         val config = buildRtcConfig()
+        resetGatherCounters()
+        // Phase 00: createMainPcOffer is the entry point for every genuinely new session
+        // (first connect AND a restart_phase2 recreate, both dispose+rebuild every PC below) —
+        // fresh opaque session_id, per-PC generation/sequence counters restart at 0.
+        telemetryReporter.startNewSession()
+        // P5: if this is a restart_phase2 re-offer (not the very first connect), the previous
+        // mainPc/videoPcs/DCs are still alive and about to be orphaned — dispose them first so
+        // we don't leak PeerConnections or leave a dead PC's observer emitting stale candidates.
+        // No-op on the first call (everything is already null/empty).
+        disposePeerConnectionsOnly()
 
         mainPc = f.createPeerConnection(config, object : PeerConnectionObserverAdapter() {
             override fun onIceCandidate(candidate: IceCandidate) {
                 Log.d(TAG, "Main PC ICE candidate: ${candidate.sdp.take(60)}")
                 onMainIceCandidate?.invoke(candidate)
+                countIceCandidateType(candidate.sdp)
             }
 
             override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) {
                 Log.d(TAG, "Main PC ICE state: $state")
                 _iceConnectionState.value = state
                 if (state == PeerConnection.IceConnectionState.CONNECTED) {
-                    detectConnectionType()
+                    pollMainPathTelemetry()
                 }
+                handleIceConnectionStateForRestart(state)
             }
+
+            // P5 F10: intentional no-op. onRenegotiationNeeded fires for SPONTANEOUS
+            // renegotiation triggers (e.g. adding a track) which this app never does after the
+            // initial offer — all renegotiation here (ICE restart, restart_phase2) is driven
+            // explicitly by triggerIceRestart()/createMainPcOffer(), never by this callback.
+            override fun onRenegotiationNeeded() {}
 
             override fun onDataChannel(dc: DataChannel) {
                 val label = dc.label()
@@ -199,6 +388,33 @@ class WebRtcManager @Inject constructor(
                 callback(sdp.description)
             }
         }, MediaConstraints())
+
+        scheduleTurnAllocationWatch()
+    }
+
+    /**
+     * Early TURN-stall detector. Field logs (2026-07-11, Viettel 4G) show the FIRST
+     * gathering generation after PC creation sometimes never yields a relay candidate,
+     * while the regather done by an ICE restart allocates within ~250ms every time.
+     * Instead of waiting ~15s for libwebrtc to reach FAILED, trigger the proven
+     * restart path as soon as the stall is evident.
+     */
+    private fun scheduleTurnAllocationWatch() {
+        val turnConfigured = iceServers.any { server ->
+            server.urls.any { it.startsWith("turn:") || it.startsWith("turns:") }
+        }
+        if (!turnConfigured) return
+
+        restartScope.launch {
+            delay(TURN_ALLOCATION_WATCH_MS)
+            val state = _iceConnectionState.value
+            val alreadyUsable = state == PeerConnection.IceConnectionState.CONNECTED ||
+                state == PeerConnection.IceConnectionState.COMPLETED
+            if (_iceRelayCount.value == 0 && !alreadyUsable && mainPc != null) {
+                Log.w(TAG, "No relay candidate ${TURN_ALLOCATION_WATCH_MS}ms after PC creation despite TURN config — kicking early ICE restart")
+                triggerIceRestart(IceRestartTrigger.ICE_FAILED)
+            }
+        }
     }
 
     fun handleMainAnswer(answerSdp: String) {
@@ -211,20 +427,149 @@ class WebRtcManager @Inject constructor(
         mainPc?.addIceCandidate(IceCandidate(sdpMid ?: "", sdpMLineIndex, candidate))
     }
 
+    // ==================== P5: ICE Restart on Network Change ====================
+
+    /** F8: called by PhaseOneHandler once it parses `hardware_info.supportsIceRestart`. */
+    fun setSupportsIceRestart(supported: Boolean) {
+        _supportsIceRestart.value = supported
+        Log.d(TAG, "Host supports_ice_restart=$supported")
+    }
+
+    /**
+     * Central entry point for ALL ICE-restart triggers: Android's ConnectivityManager
+     * (network change/loss), this manager's own iceConnectionState monitor (second trigger,
+     * F10), or a host `request_ice_restart` (optional third trigger). Gates on F8 capability +
+     * a live session; when either check fails, falls back to `restart_phase2` via
+     * [onRequestPhase2Restart] instead of ever sending an offer the host can't apply.
+     */
+    fun triggerIceRestart(trigger: IceRestartTrigger) {
+        when (IceRestartGate.decide(hasLiveSession = mainPc != null, hostSupportsIceRestart = _supportsIceRestart.value)) {
+            IceRestartDecision.IGNORE_NO_SESSION -> {
+                Log.d(TAG, "triggerIceRestart($trigger): no live session, ignoring")
+            }
+            IceRestartDecision.FALLBACK_RESTART_PHASE2 -> {
+                Log.i(TAG, "triggerIceRestart($trigger): host lacks supports_ice_restart, falling back to restart_phase2")
+                onRequestPhase2Restart?.invoke()
+            }
+            IceRestartDecision.ATTEMPT_ICE_RESTART -> {
+                if (restartT0Ms == 0L) restartT0Ms = System.currentTimeMillis() // F14 t0
+                restartCoordinator.onTrigger(trigger)
+            }
+        }
+    }
+
+    /** Host's answer to our `ice_restart_offer`, applied on the SAME live main PeerConnection. */
+    fun handleIceRestartAnswer(answerSdp: String) {
+        val pc = mainPc
+        if (pc == null) {
+            Log.w(TAG, "handleIceRestartAnswer: no live main PC, dropping answer")
+            return
+        }
+        val answer = SessionDescription(SessionDescription.Type.ANSWER, answerSdp)
+        pc.setRemoteDescription(SdpObserverAdapter(), answer)
+        Log.d(TAG, "ICE restart: applied answer, awaiting new candidate-pair selection")
+    }
+
+    /** Routes iceConnectionState transitions into the restart coordinator (F10 second trigger +
+     *  F14 recovery-clock). Called from the main PC's onIceConnectionChange observer. */
+    private fun handleIceConnectionStateForRestart(state: PeerConnection.IceConnectionState) {
+        when (state) {
+            PeerConnection.IceConnectionState.CONNECTED,
+            PeerConnection.IceConnectionState.COMPLETED -> {
+                if (restartT0Ms != 0L) {
+                    Log.i(TAG, "ICE restart recovered: t0->t1 = ${System.currentTimeMillis() - restartT0Ms}ms")
+                    restartT0Ms = 0L
+                }
+                restartCoordinator.onIceHealthy()
+            }
+            PeerConnection.IceConnectionState.DISCONNECTED -> triggerIceRestart(IceRestartTrigger.ICE_DISCONNECTED)
+            PeerConnection.IceConnectionState.FAILED -> triggerIceRestart(IceRestartTrigger.ICE_FAILED)
+            else -> {}
+        }
+    }
+
+    /** [IceRestartCoordinator]'s performRestart callback: the actual restartIce() + createOffer()
+     *  round trip on the live main PC. Never tears down the PC/encoder — only ICE re-gathers. */
+    private suspend fun performIceRestartAttempt(trigger: IceRestartTrigger) {
+        val pc = mainPc
+        if (pc == null) {
+            Log.w(TAG, "performIceRestartAttempt($trigger): session ended mid-schedule, aborting")
+            restartT0Ms = 0L
+            restartCoordinator.onIceHealthy() // clears restartInFlight so we don't get stuck
+            return
+        }
+        Log.i(TAG, "Performing ICE restart (trigger=$trigger, retry=${iceRestartPolicy.attempt})")
+        maybeRefreshIceServersBeforeRestart(pc)
+
+        // Phase 00: same session_id, new ICE epoch — bump the main PC's telemetry generation
+        // so the next poll reports a fresh `snapshot` rather than a `path_transition`.
+        telemetryReporter.bumpGeneration(role = "main", monitorIndex = 0)
+
+        pc.restartIce()
+        pc.createOffer(object : SdpObserverAdapter() {
+            override fun onCreateSuccess(sdp: SessionDescription) {
+                pc.setLocalDescription(SdpObserverAdapter(), sdp)
+                Log.d(TAG, "ICE restart offer created (trigger=$trigger)")
+                onIceRestartOffer?.invoke(sdp.description)
+            }
+
+            override fun onCreateFailure(error: String) {
+                super.onCreateFailure(error)
+                Log.w(TAG, "ICE restart createOffer failed: $error")
+                restartCoordinator.onAttemptFailed(trigger)
+            }
+        }, MediaConstraints())
+    }
+
+    /** M-O (best-effort): if the currently-applied TURN credentials are close to their TTL,
+     *  refetch `/ice-servers` and apply via setConfiguration BEFORE restarting ICE so the new
+     *  offer gathers against fresh (not soon-to-expire) TURN creds. Uses the public endpoint —
+     *  see [setIceServers] doc for why this is best-effort rather than fully wired. Swallows all
+     *  failures: a refresh miss must never block the restart itself. */
+    private suspend fun maybeRefreshIceServersBeforeRestart(pc: PeerConnection) {
+        val ttlMs = iceServersTtlSec * 1000L
+        if (ttlMs <= 0L) return // unknown TTL — nothing to refresh against
+        val elapsed = System.currentTimeMillis() - iceServersFetchedAtMs
+        if (elapsed < ttlMs * ICE_SERVERS_REFRESH_THRESHOLD) return
+
+        try {
+            withTimeout(ICE_SERVERS_REFRESH_TIMEOUT_MS) {
+                val response = relayApi.getIceServersPublic()
+                val body = if (response.isSuccessful) response.body() else null
+                if (body != null) {
+                    setIceServers(body.iceServers, body.ttl)
+                    pc.setConfiguration(buildRtcConfig())
+                    Log.i(TAG, "Refreshed ICE servers before restart (ttl=${body.ttl}s)")
+                }
+            }
+        } catch (e: TimeoutCancellationException) {
+            Log.w(TAG, "ICE servers refresh before restart timed out")
+        } catch (e: CancellationException) {
+            throw e // real cancellation (e.g. session torn down) — must propagate, never swallow
+        } catch (e: Exception) {
+            Log.w(TAG, "ICE servers refresh before restart skipped: ${e.message}")
+        }
+    }
+
     // ==================== Video PCs ====================
 
     fun handleVideoOffer(monitorIndex: Int, offerSdp: String, callback: (String) -> Unit) {
         val f = factory ?: return
         val config = buildRtcConfig()
+        if (!gatherRunning) resetGatherCounters()
 
         val pc = f.createPeerConnection(config, object : PeerConnectionObserverAdapter() {
             override fun onIceCandidate(candidate: IceCandidate) {
                 Log.d(TAG, "Video PC[$monitorIndex] ICE candidate")
                 onVideoIceCandidate?.invoke(monitorIndex, candidate)
+                countIceCandidateType(candidate.sdp)
             }
 
             override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) {
                 Log.d(TAG, "Video PC[$monitorIndex] ICE state: $state")
+                if (state == PeerConnection.IceConnectionState.CONNECTED) {
+                    pollVideoPathTelemetry(monitorIndex)
+                }
             }
 
             override fun onDataChannel(dc: DataChannel) {
@@ -265,27 +610,71 @@ class WebRtcManager @Inject constructor(
 
     // ==================== Connection Type Detection ====================
 
-    private fun detectConnectionType() {
-        mainPc?.getStats { report ->
-            for (stats in report.statsMap.values) {
-                if (stats.type == "candidate-pair" && stats.members.containsKey("nominated")) {
-                    val nominated = stats.members["nominated"] as? Boolean ?: false
-                    if (!nominated) continue
+    /** Poll the main PC's nominated candidate pair and feed it to [telemetryReporter]. Also
+     *  keeps the pre-existing [connectionType] StateFlow (used by the diagnostics UI) in sync. */
+    private fun pollMainPathTelemetry() {
+        mainPc?.getStats { report -> handleStatsForTelemetry(report, role = "main", monitorIndex = 0) }
+    }
 
-                    val localCandidateId = stats.members["localCandidateId"] as? String ?: continue
-
-                    // Find the local candidate to check its type
-                    for (candStats in report.statsMap.values) {
-                        if (candStats.id == localCandidateId) {
-                            val candidateType = candStats.members["candidateType"] as? String ?: "unknown"
-                            _connectionType.value = candidateType
-                            Log.i(TAG, "Connection type: $candidateType (${if (candidateType == "relay") "TURN" else "P2P"})")
-                            return@getStats
-                        }
-                    }
-                }
-            }
+    /** Poll one video PC's nominated candidate pair and feed it to [telemetryReporter]. */
+    private fun pollVideoPathTelemetry(monitorIndex: Int) {
+        videoPcs[monitorIndex]?.getStats { report ->
+            handleStatsForTelemetry(report, role = "video", monitorIndex = monitorIndex)
         }
+    }
+
+    /**
+     * Extracts the nominated candidate-pair fields libwebrtc's getStats actually exposes for
+     * this app's transport (DataChannel-carried video, not RTP) and hands them to
+     * [telemetryReporter] for classification/change-detection/sending. Never throws into the
+     * connection path — getStats callbacks run off the signaling thread and any failure here
+     * would otherwise be swallowed silently by libwebrtc anyway, but the extraction itself is
+     * defensive (`as?` everywhere) so a missing/renamed stats field degrades to null rather
+     * than crashing.
+     */
+    private fun handleStatsForTelemetry(report: RTCStatsReport, role: String, monitorIndex: Int) {
+        // Hard invariant: telemetry must NEVER affect the connection. This runs in a getStats
+        // callback on the WebRTC signaling thread, so wrap the whole extraction so a future
+        // non-null-safe access (or a renamed/typed stats field) degrades to a swallowed log
+        // instead of propagating across JNI and crashing the media thread. Symmetric with the
+        // Host reporter, which is already wrapped.
+        runCatching {
+        val pairStats = report.statsMap.values.firstOrNull {
+            it.type == "candidate-pair" && it.members["nominated"] as? Boolean == true
+        } ?: return@runCatching
+
+        val localCandidateId = pairStats.members["localCandidateId"] as? String
+        val remoteCandidateId = pairStats.members["remoteCandidateId"] as? String
+        val localCand = localCandidateId?.let { id -> report.statsMap.values.firstOrNull { it.id == id } }
+        val remoteCand = remoteCandidateId?.let { id -> report.statsMap.values.firstOrNull { it.id == id } }
+
+        val address = (localCand?.members?.get("address") ?: localCand?.members?.get("ip")) as? String
+        val pairRttMs = (pairStats.members["currentRoundTripTime"] as? Double)?.let { (it * 1000).roundToInt() }
+        // Fallback for the main PC: currentRoundTripTime is absent until STUN consent checks
+        // have run at least once; the DataChannel ping RTT is usually available sooner.
+        val rttMs = pairRttMs ?: (_p2pRttMs.value.takeIf { role == "main" && it > 0f }?.roundToInt())
+        val availableBitrateKbps = (pairStats.members["availableOutgoingBitrate"] as? Double)
+            ?.let { (it / 1000).roundToInt() }
+        val bytesSent = (pairStats.members["bytesSent"] as? Number)?.toLong()
+
+        val localType = telemetryReporter.recordSelectedPair(
+            role = role,
+            monitorIndex = monitorIndex,
+            rawLocalCandidateType = localCand?.members?.get("candidateType") as? String,
+            rawRemoteCandidateType = remoteCand?.members?.get("candidateType") as? String,
+            address = address,
+            rawProtocol = (pairStats.members["protocol"] ?: localCand?.members?.get("protocol")) as? String,
+            rawRelayProtocol = localCand?.members?.get("relayProtocol") as? String,
+            rttMs = rttMs,
+            availableBitrateKbps = availableBitrateKbps,
+            bytesSent = bytesSent
+        )
+
+        if (role == "main") {
+            _connectionType.value = localType
+            Log.i(TAG, "Connection type: $localType/${addressFamilyOf(address)} (${if (localType == "relay") "TURN" else "P2P"})")
+        }
+        }.onFailure { Log.w(TAG, "Telemetry stats extraction failed (ignored, telemetry only): ${it.message}") }
     }
 
     /** true if connected via TURN relay (not P2P) */
@@ -315,9 +704,49 @@ class WebRtcManager @Inject constructor(
 
     // ==================== Input ====================
 
+    // ==================== Relay-media fallback (DERP) ====================
+    // When WebRTC is unavailable, media is carried over the room WebSocket. These
+    // let the phase handler feed decoded-bound frames in and route input out, reusing
+    // the exact same decoder/audio/input paths as the P2P DataChannels.
+
+    /** On while media flows over the relay instead of WebRTC. */
+    @Volatile var relayMediaMode: Boolean = false
+
+    /** Set by the phase handler to send input back to the host over the room WS. */
+    var onRelayInput: ((ByteArray) -> Unit)? = null
+
+    /** Feed a relay video chunk (protocol-v2 framed, envelope already stripped). */
+    fun feedRelayVideo(payload: ByteArray) {
+        if (payload.size < 2) return
+        val monitorIdx = payload[1].toInt() and 0xFF
+        onVideoFrame?.invoke(monitorIdx, payload)
+    }
+
+    /** Feed relay audio PCM (envelope already stripped). */
+    fun feedRelayAudio(pcm: ByteArray) {
+        _audioData.tryEmit(pcm)
+    }
+
+    /** Feed a relay cursor message (envelope already stripped). */
+    fun feedRelayCursor(data: ByteArray) {
+        _cursorData.tryEmit(data)
+    }
+
     fun sendInput(data: ByteArray) {
-        val dc = inputDc ?: return
-        if (dc.state() != DataChannel.State.OPEN) return
+        // Relay mode: input goes back to the host over the WebSocket, not a DataChannel.
+        if (relayMediaMode) {
+            onRelayInput?.invoke(data)
+            return
+        }
+        // No relay-start yet — fall back to WS if P2P DC is also unavailable. This prevents
+        // a ~8s input blackout during ICE negotiation when P2P will eventually fail and the
+        // host falls back to media-relay (relayMediaMode flips on then). The server accepts
+        // WS input regardless of relay-media state, so this is safe to send early.
+        val dc = inputDc
+        if (dc == null || dc.state() != DataChannel.State.OPEN) {
+            onRelayInput?.invoke(data)
+            return
+        }
         dc.send(DataChannel.Buffer(ByteBuffer.wrap(data), true))
     }
 
@@ -341,7 +770,30 @@ class WebRtcManager @Inject constructor(
         onVideoFrame = null
         onMainIceCandidate = null
         onVideoIceCandidate = null
+        onIceRestartOffer = null
+        onRequestPhase2Restart = null
 
+        // P5: cancel any pending/in-flight ICE-restart scheduling so a stale attempt can't fire
+        // (and call performIceRestartAttempt against a PC that's about to be disposed) after a
+        // fresh session has already started.
+        restartCoordinator.onIceHealthy()
+        restartT0Ms = 0L
+
+        disposePeerConnectionsOnly()
+        // NOTE: telemetryScope/restartScope are intentionally NOT cancelled here —
+        // WebRtcManager is a @Singleton reused across sessions, and cancelling would silently
+        // kill telemetry/restart-scheduling for every reconnect after the first. Their
+        // coroutines are short-lived (or self-cancelling via the guards above) under a
+        // SupervisorJob, so there is no leak.
+        Log.d(TAG, "Disposed all PeerConnections")
+    }
+
+    /** Tears down mainPc/videoPcs/DataChannels WITHOUT touching the callback lambdas
+     *  (onVideoFrame/onMainIceCandidate/onVideoIceCandidate/onIceRestartOffer/
+     *  onRequestPhase2Restart) — used both by [dispose] (full session teardown) and by
+     *  [createMainPcOffer] before re-creating the main PC on a restart_phase2 round trip, where
+     *  the session keeps running and those callbacks must stay wired. */
+    private fun disposePeerConnectionsOnly() {
         videoDcs.values.forEach { it.close() }
         videoDcs.clear()
         videoPcs.values.forEach { it.dispose() }
@@ -350,7 +802,48 @@ class WebRtcManager @Inject constructor(
         inputDc = null
         mainPc?.dispose()
         mainPc = null
-        Log.d(TAG, "Disposed all PeerConnections")
+    }
+
+    // ==================== ICE candidate diagnostics ====================
+
+    private fun resetGatherCounters() {
+        _iceHostCount.value = 0
+        _iceSrflxCount.value = 0
+        _iceRelayCount.value = 0
+        _icePrflxCount.value = 0
+        _iceGatherDurationMs.value = 0L
+        gatherStartMs = System.currentTimeMillis()
+        gatherRunning = true
+    }
+
+    private fun countIceCandidateType(sdp: String) {
+        if (sdp.isEmpty()) return
+        if (!gatherRunning) {
+            gatherStartMs = System.currentTimeMillis()
+            gatherRunning = true
+        }
+        when {
+            sdp.contains(" typ host ") -> _iceHostCount.value = _iceHostCount.value + 1
+            sdp.contains(" typ srflx ") -> _iceSrflxCount.value = _iceSrflxCount.value + 1
+            sdp.contains(" typ relay ") -> _iceRelayCount.value = _iceRelayCount.value + 1
+            sdp.contains(" typ prflx ") -> _icePrflxCount.value = _icePrflxCount.value + 1
+        }
+    }
+
+    /**
+     * Called by PhaseTwoHandler when "end-of-candidates" is received from the
+     * remote side. Stops gather timer and finalises duration metric.
+     */
+    fun onEndOfCandidates() {
+        if (!gatherRunning) return
+        val ms = System.currentTimeMillis() - gatherStartMs
+        _iceGatherDurationMs.value = ms
+        gatherRunning = false
+        val h = _iceHostCount.value
+        val s = _iceSrflxCount.value
+        val r = _iceRelayCount.value
+        val p = _icePrflxCount.value
+        Log.d(TAG, "ICE gathered (self): H=$h S=$s R=$r P=$p in ${ms}ms")
     }
 }
 
